@@ -4,11 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getRiskColor, getRiskBgRgba } from "./utils/riskColors";
 
-// Mock data — replace with real API later
-const MOCK_BTC_PRICE_USD = 103420;
 const MOCK_BTC_24H_CHANGE = 2.14;
 const USD_TO_AUD = 1.55;
-const RISK_VALUE = 64;
 const MOCK_LAST_UPDATED = "Updated today";
 
 const COUNT_DURATION_MS = 1200;
@@ -28,13 +25,6 @@ function getIntervalsPerYear(freq: string): number {
     case "monthly": return 12;
     default: return 52;
   }
-}
-
-// Placeholder: risk band 0–100 in steps of 10 → BTC price (mock)
-function getMockBtcPriceForRisk(risk: number): number {
-  const base = MOCK_BTC_PRICE_USD;
-  const factor = 1 + (risk / 100) * 0.8;
-  return Math.round(base * factor);
 }
 
 function easeOutCubic(t: number): number {
@@ -221,11 +211,13 @@ export default function Home() {
   const [dashboardVisible, setDashboardVisible] = useState(false);
   const [displayValue, setDisplayValue] = useState(0);
   const [countComplete, setCountComplete] = useState(false);
+  const [riskValue, setRiskValue] = useState(50);
+  const [btcPriceUsd, setBtcPriceUsd] = useState(103420);
 
   const [currency, setCurrency] = useState<"USD" | "AUD">("USD");
   const [dashboardTab, setDashboardTab] = useState<"riskIndex" | "manualPlanner" | "savedPlan" | "backtest">("riskIndex");
   const [riskBandOpen, setRiskBandOpen] = useState(false);
-  const [simulatedRisk, setSimulatedRisk] = useState(RISK_VALUE);
+  const [simulatedRisk, setSimulatedRisk] = useState(50);
   const [dcaMode, setDcaMode] = useState<"accumulate" | "distribute" | null>(null);
 
   const [capital, setCapital] = useState(10000);
@@ -243,6 +235,24 @@ export default function Home() {
     setMounted(true);
     setUser(getAuthState());
   }, []);
+
+  useEffect(() => {
+    fetch("/api/risk")
+      .then((res) => res.json())
+      .then((data: { risk_score?: number; price?: number }) => {
+        if (typeof data.risk_score === "number") setRiskValue(data.risk_score);
+        if (typeof data.price === "number") setBtcPriceUsd(data.price);
+        if (typeof data.risk_score === "number") setSimulatedRisk(Math.round(data.risk_score));
+      })
+      .catch(() => {});
+  }, []);
+
+  const getMockBtcPriceForRisk = (risk: number): number => {
+    const base = btcPriceUsd;
+    const factor = 1 + (risk / 100) * 0.8;
+    return Math.round(base * factor);
+  };
+
   const isLoggedIn = mounted && user !== null;
   const { trialActive } = getTrialState(user);
   /** Can save: Standard OR (Free and trial active). Trial active = free plan with trial_ended_at in the future. */
@@ -421,7 +431,7 @@ export default function Home() {
       const next = prev.map((p) => {
         if (p.type !== "fixed") return p;
         const { minR, maxR } = getActiveRiskBounds(p);
-        const inActiveRange = RISK_VALUE >= minR && RISK_VALUE <= maxR;
+        const inActiveRange = riskValue >= minR && riskValue <= maxR;
         if (!p.active || !p.frequency) return p;
         if (!inActiveRange) {
           if (p.nextExecutionAt) {
@@ -437,16 +447,16 @@ export default function Home() {
           if (p.mode === "distribute") {
             const sold = (p.executions ?? []).reduce((s, e) => s + e.btcAmount, 0);
             const remaining = Math.max(0, (p.btcHoldings ?? 0) - sold);
-            const price = getMockBtcPriceForRisk(RISK_VALUE);
+            const price = getMockBtcPriceForRisk(riskValue);
             const btcNeeded = price > 0 ? p.amountPerPurchase / price : 0;
             if (btcNeeded > remaining) return p;
           }
-          const price = getMockBtcPriceForRisk(RISK_VALUE);
+          const price = getMockBtcPriceForRisk(riskValue);
           const btcAmount = price > 0 ? p.amountPerPurchase / price : 0;
           const newEx: MockExecution = {
             id: `exec-${now}-${p.id}`,
             date: nowIso.slice(0, 10),
-            riskAtExecution: RISK_VALUE,
+            riskAtExecution: riskValue,
             amountFiat: p.amountPerPurchase,
             btcAmount,
             pricePerBtc: price,
@@ -468,7 +478,7 @@ export default function Home() {
       const next = prev.map((p) => {
         if (p.type !== "scaled" || !p.active) return p;
         const { minR, maxR } = getActiveRiskBounds(p);
-        const inActiveRange = RISK_VALUE >= minR && RISK_VALUE <= maxR;
+        const inActiveRange = riskValue >= minR && riskValue <= maxR;
         if (!inActiveRange) return p;
         const levels = getStrategyLevels(p);
         const executedByLevel = new Map<number, MockExecution>();
@@ -477,8 +487,8 @@ export default function Home() {
           if (!executedByLevel.has(closest)) executedByLevel.set(closest, ex);
         });
         const crossedNotExecuted = p.mode === "accumulate"
-          ? levels.filter((L) => RISK_VALUE <= L && !executedByLevel.has(L))
-          : levels.filter((L) => RISK_VALUE >= L && !executedByLevel.has(L));
+          ? levels.filter((L) => riskValue <= L && !executedByLevel.has(L))
+          : levels.filter((L) => riskValue >= L && !executedByLevel.has(L));
         if (crossedNotExecuted.length === 0) return p;
         if (p.mode === "distribute") {
           const sold = (p.executions ?? []).reduce((s, e) => s + e.btcAmount, 0);
@@ -584,7 +594,7 @@ export default function Home() {
     if (!riskSectionVisible) return;
     const prefersReducedMotion = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (prefersReducedMotion) {
-      setDisplayValue(RISK_VALUE);
+      setDisplayValue(riskValue);
       setCountComplete(true);
       return;
     }
@@ -593,20 +603,20 @@ export default function Home() {
     const tick = (now: number) => {
       const elapsed = now - start;
       const t = Math.min(1, elapsed / COUNT_DURATION_MS);
-      const value = Math.floor(easeOutCubic(t) * RISK_VALUE);
+      const value = Math.floor(easeOutCubic(t) * riskValue);
       setDisplayValue(value);
       if (t < 1) {
         rafId = requestAnimationFrame(tick);
       } else {
-        setDisplayValue(RISK_VALUE);
+        setDisplayValue(riskValue);
         setCountComplete(true);
       }
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [riskSectionVisible]);
+  }, [riskSectionVisible, riskValue]);
 
-  const currentRiskForPlanner = RISK_VALUE;
+  const currentRiskForPlanner = riskValue;
   const btcPriceForPlanner = getMockBtcPriceForRisk(currentRiskForPlanner);
   const modeForCalc = dcaMode ?? "accumulate";
   const inRangePlanner = currentRiskForPlanner >= builderMinR && currentRiskForPlanner <= builderMaxR;
@@ -807,7 +817,7 @@ export default function Home() {
     const minR = Math.min(draft.activeRiskStart, draft.activeRiskEnd);
     const maxR = Math.max(draft.activeRiskStart, draft.activeRiskEnd);
     const threshold = draft.dcaMode === "accumulate" ? maxR : minR;
-    const inActiveRange = RISK_VALUE >= minR && RISK_VALUE <= maxR;
+    const inActiveRange = riskValue >= minR && riskValue <= maxR;
     const isFixed = draft.strategyType === "fixed";
     const isBuyFixed = draft.dcaMode === "accumulate" && isFixed;
     const isSellFixed = draft.dcaMode === "distribute" && isFixed;
@@ -830,14 +840,14 @@ export default function Home() {
       }
     }
     if (inActiveRange && isBuyFixed) {
-      const price = getMockBtcPriceForRisk(RISK_VALUE);
+      const price = getMockBtcPriceForRisk(riskValue);
       const btcAmount = price > 0 ? amount / price : 0;
-      initialExecutions.push({ id: `exec-${Date.now()}`, date: now.slice(0, 10), riskAtExecution: RISK_VALUE, amountFiat: amount, btcAmount, pricePerBtc: price });
+      initialExecutions.push({ id: `exec-${Date.now()}`, date: now.slice(0, 10), riskAtExecution: riskValue, amountFiat: amount, btcAmount, pricePerBtc: price });
     }
     if (inActiveRange && isSellFixed) {
-      const price = getMockBtcPriceForRisk(RISK_VALUE);
+      const price = getMockBtcPriceForRisk(riskValue);
       const btcAmount = price > 0 ? amount / price : 0;
-      initialExecutions.push({ id: `exec-${Date.now()}`, date: now.slice(0, 10), riskAtExecution: RISK_VALUE, amountFiat: amount, btcAmount, pricePerBtc: price });
+      initialExecutions.push({ id: `exec-${Date.now()}`, date: now.slice(0, 10), riskAtExecution: riskValue, amountFiat: amount, btcAmount, pricePerBtc: price });
     }
     const newPlan: SavedStrategy = {
       id: `plan-${Date.now()}`,
@@ -965,14 +975,14 @@ export default function Home() {
 
   function getPlanStatusDisplay(plan: SavedStrategy): string {
     const { minR, maxR } = getActiveRiskBounds(plan);
-    const inActiveRange = RISK_VALUE >= minR && RISK_VALUE <= maxR;
+    const inActiveRange = riskValue >= minR && riskValue <= maxR;
     if (inActiveRange && plan.active) return "ACTIVE";
     return "WAITING FOR ENTRY";
   }
 
   function getStatusTile(plan: SavedStrategy): "ACTIVE" | "WAITING FOR ENTRY" {
     const { minR, maxR } = getActiveRiskBounds(plan);
-    const inActiveRange = RISK_VALUE >= minR && RISK_VALUE <= maxR;
+    const inActiveRange = riskValue >= minR && riskValue <= maxR;
     if (inActiveRange && plan.active) return "ACTIVE";
     return "WAITING FOR ENTRY";
   }
@@ -1182,13 +1192,13 @@ export default function Home() {
 
   const handleSliderRelease = () => {
     const startVal = simulatedRisk;
-    if (startVal === RISK_VALUE) return;
+    if (startVal === riskValue) return;
     const start = performance.now();
     const dur = 250;
     const tick = (now: number) => {
       const t = Math.min(1, (now - start) / dur);
       const eased = 1 - Math.pow(1 - t, 3);
-      setSimulatedRisk(Math.round(startVal + (RISK_VALUE - startVal) * eased));
+      setSimulatedRisk(Math.round(startVal + (riskValue - startVal) * eased));
       if (t < 1) requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
@@ -2316,7 +2326,7 @@ export default function Home() {
             }}
             onMouseEnter={() => setRiskNumberHover(true)}
             onMouseLeave={() => setRiskNumberHover(false)}
-            aria-label={`Risk level ${RISK_VALUE}`}
+            aria-label={`Risk level ${riskValue}`}
           >
             {displayValue}
           </p>
@@ -2414,7 +2424,7 @@ export default function Home() {
                   <div className="min-w-0">
                     <p className="text-[11px] uppercase tracking-wider text-white/50">BTC Price</p>
                     <p className="mt-1.5 text-lg font-bold tabular-nums text-white md:text-xl">
-                      {symbol}{Math.round(btcPrice).toLocaleString()}
+                      {symbol}{Math.round(currency === "AUD" ? btcPriceUsd * USD_TO_AUD : btcPriceUsd).toLocaleString()}
                     </p>
                   </div>
                   <div className="min-w-0">
@@ -2875,7 +2885,7 @@ export default function Home() {
                   savedPlans.map((plan) => {
                     const isAccumulate = plan.mode === "accumulate";
                     const { minR: activeMinR, maxR: activeMaxR } = getActiveRiskBounds(plan);
-                    const inActiveRange = RISK_VALUE >= activeMinR && RISK_VALUE <= activeMaxR;
+                    const inActiveRange = riskValue >= activeMinR && riskValue <= activeMaxR;
                     const inZone = inActiveRange;
                     const statusLabel = (inActiveRange && plan.active) ? "ACTIVE" : "WAITING FOR ENTRY";
                     const triggerNow = inZone;
@@ -2903,14 +2913,14 @@ export default function Home() {
                     const remainingOrders = levels.filter((L) => !displayCompletedLevels.has(L)).length;
                     const allLevelsExecuted = remainingOrders === 0;
                     const nextPendingLevel = isAccumulate
-                      ? levels.filter((L) => L <= RISK_VALUE && !displayCompletedLevels.has(L))[0] ?? levels[0]
-                      : levels.filter((L) => L >= RISK_VALUE && !displayCompletedLevels.has(L))[0] ?? (levels[levels.length - 1] ?? activeMaxR);
-                    const currentBtcPrice = getMockBtcPriceForRisk(RISK_VALUE);
-                    const nextAmount = plan.strategyType === "dynamic" ? getAmountAtRiskFromPlan(plan, nextPendingLevel) : getAmountAtRiskFromPlan(plan, RISK_VALUE);
+                      ? levels.filter((L) => L <= riskValue && !displayCompletedLevels.has(L))[0] ?? levels[0]
+                      : levels.filter((L) => L >= riskValue && !displayCompletedLevels.has(L))[0] ?? (levels[levels.length - 1] ?? activeMaxR);
+                    const currentBtcPrice = getMockBtcPriceForRisk(riskValue);
+                    const nextAmount = plan.strategyType === "dynamic" ? getAmountAtRiskFromPlan(plan, nextPendingLevel) : getAmountAtRiskFromPlan(plan, riskValue);
                     const nextBtcPreview = currentBtcPrice > 0 ? nextAmount / currentBtcPrice : 0;
                     const currentValue = totalBtc * currentBtcPrice;
                     const unrealisedPl = totalFiatDeployed > 0 ? currentValue - totalFiatDeployed : 0;
-                    const closestLevelToCurrent = levels.reduce((a, b) => Math.abs(a - RISK_VALUE) <= Math.abs(b - RISK_VALUE) ? a : b);
+                    const closestLevelToCurrent = levels.reduce((a, b) => Math.abs(a - riskValue) <= Math.abs(b - riskValue) ? a : b);
                     const currentLevelExecuted = displayCompletedLevels.has(closestLevelToCurrent);
                     const totalBtcSold = totalBtc;
                     const btcRemaining = Math.max(0, (plan.btcHoldings ?? 0) - totalBtcSold);
@@ -2975,7 +2985,7 @@ export default function Home() {
                                 if (!inActiveRange) return <NextActionCard header="Status" primaryLine="WAITING FOR ENTRY" alerts={alertsEl} elevated={false} />;
                                 if (allLevelsExecuted) return <NextActionCard header="Status" primaryLine="Strategy fully deployed" alerts={alertsEl} elevated={false} />;
                                 if (plan.strategyType === "dynamic") return <NextActionCard header="NEXT ACTION" primaryLine={<span>Risk <span style={{ color: getRiskColor(nextPendingLevel) }}>{nextPendingLevel}</span></span>} secondaryLine={isAccumulate ? <>Buy {sym}{nextAmount.toLocaleString()} → ~{nextBtcPreview.toFixed(4)} BTC</> : <>Sell ~{nextBtcPreview.toFixed(4)} BTC → {sym}{nextAmount.toLocaleString()}</>} alerts={alertsEl} elevated />;
-                                return <NextActionCard header="NEXT ACTION" primaryLine={<>{getFrequencyLabel(plan.frequency)} — Next in: {formatNextExecutionCountdown(plan.nextExecutionAt)}</>} secondaryLine={isAccumulate ? <>Buy {sym}{plan.amountPerPurchase.toLocaleString()} → ~{(plan.amountPerPurchase / Math.max(1, getMockBtcPriceForRisk(RISK_VALUE))).toFixed(4)} BTC</> : <>Sell ~{(plan.amountPerPurchase / Math.max(1, getMockBtcPriceForRisk(RISK_VALUE))).toFixed(4)} BTC → {sym}{plan.amountPerPurchase.toLocaleString()}</>} alerts={alertsEl} elevated />;
+                                return <NextActionCard header="NEXT ACTION" primaryLine={<>{getFrequencyLabel(plan.frequency)} — Next in: {formatNextExecutionCountdown(plan.nextExecutionAt)}</>} secondaryLine={isAccumulate ? <>Buy {sym}{plan.amountPerPurchase.toLocaleString()} → ~{(plan.amountPerPurchase / Math.max(1, getMockBtcPriceForRisk(riskValue))).toFixed(4)} BTC</> : <>Sell ~{(plan.amountPerPurchase / Math.max(1, getMockBtcPriceForRisk(riskValue))).toFixed(4)} BTC → {sym}{plan.amountPerPurchase.toLocaleString()}</>} alerts={alertsEl} elevated />;
                               })()}
 
                               {/* Compact Strategy Progress — horizontal; BUY vs SELL metrics differ */}
@@ -3160,7 +3170,7 @@ export default function Home() {
                                         </div>
                                       );
                                     })}
-                                    <div className="absolute top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-sm z-[11]" style={{ left: `${RISK_VALUE}%` }} aria-hidden title={`Current risk ${RISK_VALUE}`} />
+                                    <div className="absolute top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-sm z-[11]" style={{ left: `${riskValue}%` }} aria-hidden title={`Current risk ${riskValue}`} />
                                   </div>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-3 shrink-0">
