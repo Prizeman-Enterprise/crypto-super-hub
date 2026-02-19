@@ -1,0 +1,46 @@
+[2026-02-19 14:10:18] ============================================================
+[2026-02-19 14:10:18] Risk Engine — Multi-Asset Update
+[2026-02-19 14:10:18] ============================================================
+[2026-02-19 14:10:18] 
+[2026-02-19 14:10:18] --- Bitcoin (BTC) ---
+[2026-02-19 14:10:18]   Fetching BTCUSDT from Binance (from 2017-08-17)...
+[2026-02-19 14:10:21]   Got 3109 candles
+[2026-02-19 14:10:21]   Combined: 5681 days (pre-Binance: 2572, Binance: 3109)
+[2026-02-19 14:10:21]   Price range: $0.0500 to $66,877.99
+[2026-02-19 14:10:21]   Score: 23.2 | Price: $66,877.99 | Trend: $123,772.57
+[2026-02-19 14:10:21]   Saved history: /Users/thomasprizeman/csh-cycle-index/data/btc_risk_history.csv
+[2026-02-19 14:10:21] 
+[2026-02-19 14:10:21] --- Ethereum (ETH) ---
+[2026-02-19 14:10:21]   Fetching ETHUSDT from Binance (from 2017-08-17)...
+[2026-02-19 14:10:24]   Got 3109 candles
+[2026-02-19 14:10:24]   Combined: 3835 days (pre-Binance: 726, Binance: 3109)
+[2026-02-19 14:10:24]   Price range: $1.2000 to $1,968.08
+[2026-02-19 14:10:25]   Score: 8.2 | Price: $1,968.08 | Trend: $3,203.61
+[2026-02-19 14:10:25]   Saved history: /Users/thomasprizeman/csh-cycle-index/data/eth_risk_history.csv
+[2026-02-19 14:10:25] 
+[2026-02-19 14:10:25] --- Solana (SOL) ---
+[2026-02-19 14:10:25]   Fetching SOLUSDT from Binance (from 2020-04-10)...
+[2026-02-19 14:10:27]   Got 2019 candles
+[2026-02-19 14:10:27]   Total: 2019 days
+[2026-02-19 14:10:27]   Price range: $3.2985 to $81.63
+[2026-02-19 14:10:27]   Score: 16.3 | Price: $81.63 | Trend: $166.00
+[2026-02-19 14:10:27]   Saved history: /Users/thomasprizeman/csh-cycle-index/data/sol_risk_history.csv
+[2026-02-19 14:10:27] 
+[2026-02-19 14:10:27] --- XRP (XRP) ---
+[2026-02-19 14:10:27]   Fetching XRPUSDT from Binance (from 2018-01-01)...
+[2026-02-19 14:10:30]   Got 2849 candles
+[2026-02-19 14:10:30]   Combined: 4308 days (pre-Binance: 1459, Binance: 2849)
+[2026-02-19 14:10:30]   Price range: $0.0050 to $1.42
+[2026-02-19 14:10:30]   Score: 50.0 | Price: $1.42 | Trend: $0.74
+[2026-02-19 14:10:30]   Saved history: /Users/thomasprizeman/csh-cycle-index/data/xrp_risk_history.csv
+[2026-02-19 14:10:30] 
+[2026-02-19 14:10:30] Output: /Users/thomasprizeman/csh-cycle-index/public/risk_scores.json
+[2026-02-19 14:10:30] 
+[2026-02-19 14:10:30] ============================================================
+[2026-02-19 14:10:30]   SUMMARY
+[2026-02-19 14:10:30] ============================================================
+[2026-02-19 14:10:30]   BTC   23.2  $ 66,877.99  (2026-02-19)
+[2026-02-19 14:10:30]   ETH    8.2  $  1,968.08  (2026-02-19)
+[2026-02-19 14:10:30]   SOL   16.3  $     81.63  (2026-02-19)
+[2026-02-19 14:10:30]   XRP   50.0  $      1.42  (2026-02-19)
+[2026-02-19 14:10:30] ============================================================

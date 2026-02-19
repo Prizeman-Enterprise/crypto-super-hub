@@ -1,1 +1,17 @@
-{"asset_id":"BTC","date":"2026-02-18","risk_score":23.8,"price":67520.95,"trend_value":123694.86,"components":{"residual":-0.60538,"z_score":-0.8098,"raw_score":22.89,"smoothed_score":23.75},"updated_at":"2026-02-18T12:49:19Z"}
+{
+  "asset_id": "BTC",
+  "name": "Bitcoin",
+  "date": "2026-02-19",
+  "risk_score": 23.2,
+  "price": 66877.99,
+  "trend_value": 123772.57,
+  "components": {
+    "residual": -0.615576,
+    "z_score": -0.8319,
+    "raw_score": 22.31,
+    "smoothed_score": 23.21
+  },
+  "history_days": 5317,
+  "status": "active",
+  "updated_at": "2026-02-19T03:40:30Z"
+}
