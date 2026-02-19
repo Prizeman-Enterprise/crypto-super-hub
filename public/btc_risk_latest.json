@@ -3,19 +3,19 @@
   "name": "Bitcoin",
   "date": "2026-02-19",
   "risk_score": 33.7,
-  "price": 66899.93,
-  "trend_value": 123772.58,
+  "price": 67144.56,
+  "trend_value": 123772.79,
   "components": {
-    "deviation": -0.6152,
+    "deviation": -0.6116,
     "min_deviation": -2.0506,
     "max_deviation": 2.2523,
-    "raw_score": 33.36,
-    "smoothed_score": 33.71,
-    "floor_price": 15923.83,
-    "ceiling_price": 1177059.94
+    "raw_score": 33.44,
+    "smoothed_score": 33.73,
+    "floor_price": 15923.86,
+    "ceiling_price": 1177061.88
   },
   "regression_mode": "expanding",
   "history_days": 5317,
   "status": "active",
-  "updated_at": "2026-02-19T04:32:00Z"
+  "updated_at": "2026-02-19T09:35:15Z"
 }

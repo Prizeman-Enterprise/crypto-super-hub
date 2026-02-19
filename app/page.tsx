@@ -69,13 +69,54 @@ type SavedStrategy = {
   /** For scaled strategies: persisted risk levels + order sizes. Rendered from this; do not recompute on display. */
   computedOrders?: { risk: number; amountFiat: number }[];
   executions?: MockExecution[];
+  /** Asset this strategy is for (default BTC for legacy). */
+  asset_id?: string;
 };
 
 const SAVED_STRATEGIES_KEY = "csh-saved-strategies";
 
-/** User model for auth and subscription.
- *  TODO: Replace with real API (login, register, forgot-password, subscription endpoints, email verification).
- */
+/** Per-asset data from risk_scores.json */
+type AssetData = {
+  asset_id: string;
+  name: string;
+  date?: string;
+  risk_score: number;
+  price: number;
+  trend_value?: number;
+  components?: { floor_price?: number; ceiling_price?: number; [key: string]: unknown };
+  status?: string;
+};
+
+const ASSET_ORDER = ["BTC", "ETH", "SOL", "XRP"] as const;
+const ASSET_COLORS: Record<string, string> = {
+  BTC: "bg-[#F28C28]",
+  ETH: "bg-[#627EEA]",
+  SOL: "bg-emerald-500",
+  XRP: "bg-[#23292F]",
+};
+
+const TOKEN_LOGOS: Record<string, string> = {
+  BTC: "https://assets.coingecko.com/coins/images/1/small/bitcoin.png",
+  ETH: "https://assets.coingecko.com/coins/images/279/small/ethereum.png",
+  SOL: "https://assets.coingecko.com/coins/images/4128/small/solana.png",
+  XRP: "https://assets.coingecko.com/coins/images/44/small/xrp-symbol-white-128.png",
+};
+
+/** Plan tier for gating. anonymous = not logged in. */
+type PlanTier = "anonymous" | "free" | "trial" | "standard";
+
+/** Derived user state for gating and UI. */
+interface UserState {
+  isLoggedIn: boolean;
+  planTier: PlanTier;
+  trialStartDate: string | null;
+  trialUsed: boolean;
+  emailVerified: boolean;
+  /** Trial days remaining (0 if expired or not in trial). */
+  trialDaysRemaining: number;
+}
+
+/** User model persisted to localStorage (no real backend yet). */
 type User = {
   id: string;
   email: string;
@@ -86,11 +127,47 @@ type User = {
   subscription_status: string;
   stripe_customer_id: string | null;
   created_at: string;
-  /** Email verification status (mock for now, but flow supports a verified state). */
   email_verified: boolean;
-  /** Optional referral code supplied at signup. */
   referral_code?: string | null;
 };
+
+function getUserState(user: User | null, devTierOverride: PlanTier | null): UserState {
+  const isLoggedIn = user !== null;
+  if (!user) {
+    return { isLoggedIn: false, planTier: "anonymous", trialStartDate: null, trialUsed: false, emailVerified: false, trialDaysRemaining: 0 };
+  }
+  if (devTierOverride && devTierOverride !== "anonymous") {
+    const trialStart = user.trial_started_at ?? undefined;
+    const daysRemaining = trialStart && devTierOverride === "trial"
+      ? Math.max(0, 7 - Math.floor((Date.now() - new Date(trialStart).getTime()) / 86400000))
+      : 0;
+    return {
+      isLoggedIn: true,
+      planTier: devTierOverride,
+      trialStartDate: user.trial_started_at,
+      trialUsed: user.trial_used,
+      emailVerified: user.email_verified ?? true,
+      trialDaysRemaining: devTierOverride === "trial" ? (daysRemaining || 7) : 0,
+    };
+  }
+  if (user.plan_type === "standard") {
+    return { isLoggedIn: true, planTier: "standard", trialStartDate: user.trial_started_at, trialUsed: user.trial_used, emailVerified: user.email_verified ?? true, trialDaysRemaining: 0 };
+  }
+  const trialEndsAt = user.trial_ended_at ? new Date(user.trial_ended_at) : null;
+  const trialActive = trialEndsAt !== null && trialEndsAt > new Date();
+  const trialStart = user.trial_started_at ?? null;
+  const trialDaysRemaining = trialActive && trialEndsAt
+    ? Math.max(0, Math.ceil((trialEndsAt.getTime() - Date.now()) / 86400000))
+    : 0;
+  return {
+    isLoggedIn: true,
+    planTier: trialActive ? "trial" : "free",
+    trialStartDate: trialStart,
+    trialUsed: user.trial_used,
+    emailVerified: user.email_verified ?? true,
+    trialDaysRemaining,
+  };
+}
 
 const AUTH_USER_KEY = "csh-auth-user";
 /** Pending builder strategy draft used when saving through auth flow. Stored per-browser only. */
@@ -110,13 +187,6 @@ function getAuthState(): User | null {
 
 function loadAuthUser(): User | null {
   return getAuthState();
-}
-
-/** Trial is active if user is free and trial_ended_at is in the future. */
-function getTrialState(user: User | null): { trialActive: boolean; trialEndsAt: Date | null } {
-  if (!user || user.plan_type !== "free" || !user.trial_ended_at) return { trialActive: false, trialEndsAt: null };
-  const endsAt = new Date(user.trial_ended_at);
-  return { trialEndsAt: endsAt, trialActive: endsAt > new Date() };
 }
 
 /** Draft shape for strategy builder — persisted when opening auth from save flow. */
@@ -167,12 +237,30 @@ function clearDraft(): void {
 }
 
 const RISK_BAND_ROW_HEIGHT = 36;
-// Steps 0, 2.5, 5, 7.5, ... 100 (41 rows)
-const RISK_BAND_VALUES = Array.from({ length: 41 }, (_, i) => i * 2.5);
+/** Risk levels for band table: spec list + log interpolation. */
+const RISK_BAND_LEVELS = [0, 2.5, 5, 7.5, 10, 12.5, 15, 17.5, 20, 22.5, 25, 27.5, 30, 32.5, 35, 37.5, 40, 42.5, 45, 47.5, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100];
 const RISK_BAND_VISIBLE_EXTRA = 2;
 
 function formatRiskValue(r: number): string {
   return r % 1 === 0 ? String(r) : String(r);
+}
+
+/** Price at risk using log interpolation: floor * (ceiling/floor)^(risk/100). */
+function priceAtRiskLog(floor: number, ceiling: number, risk: number): number {
+  if (floor <= 0 || ceiling <= 0) return floor || ceiling || 0;
+  return floor * Math.pow(ceiling / floor, risk / 100);
+}
+
+/** Format price for display by asset (BTC/ETH whole; SOL 2 decimals; XRP 2 decimals). */
+function formatPriceByAsset(assetId: string, priceUsd: number, currency: "USD" | "AUD", usdToAud: number): string {
+  const sym = currency === "AUD" ? "A$" : "$";
+  const p = currency === "AUD" ? priceUsd * usdToAud : priceUsd;
+  if (assetId === "BTC" || assetId === "ETH") {
+    return `${sym}${Math.round(p).toLocaleString()}`;
+  }
+  if (assetId === "SOL") return `${sym}${p.toFixed(2)}`;
+  if (assetId === "XRP") return `${sym}${p.toFixed(2)}`;
+  return `${sym}${p >= 1 ? Math.round(p).toLocaleString() : p.toFixed(4)}`;
 }
 
 function loadSavedStrategies(): SavedStrategy[] {
@@ -187,6 +275,7 @@ function loadSavedStrategies(): SavedStrategy[] {
       const defEnd = p.mode === "accumulate" ? 0 : 100;
       return {
         ...p,
+        asset_id: (p as SavedStrategy).asset_id ?? "BTC",
         active: p.active ?? false,
         strategyType: st,
         type: (p as SavedStrategy).type ?? (st === "fixed" ? "fixed" : "scaled"),
@@ -205,17 +294,21 @@ function loadSavedStrategies(): SavedStrategy[] {
 }
 
 export default function Home() {
-  const riskSectionRef = useRef<HTMLElement>(null);
   const dashboardSectionRef = useRef<HTMLElement>(null);
-  const [riskSectionVisible, setRiskSectionVisible] = useState(false);
   const [dashboardVisible, setDashboardVisible] = useState(false);
   const [displayValue, setDisplayValue] = useState(0);
   const [countComplete, setCountComplete] = useState(false);
   const [riskValue, setRiskValue] = useState(50);
-  const [btcPriceUsd, setBtcPriceUsd] = useState(103420);
+  const [assetPriceUsd, setAssetPriceUsd] = useState(103420);
+  const [selectedAsset, setSelectedAsset] = useState<string | null>(null);
+  /** Asset selected in Strategy Builder (null = show asset selector first). */
+  const [builderAsset, setBuilderAsset] = useState<string | null>(null);
+  const [tokenLogoFailed, setTokenLogoFailed] = useState<Set<string>>(new Set());
+  const [allAssets, setAllAssets] = useState<Record<string, AssetData>>({});
+  const [riskUpdatedAt, setRiskUpdatedAt] = useState<string | null>(null);
 
   const [currency, setCurrency] = useState<"USD" | "AUD">("USD");
-  const [dashboardTab, setDashboardTab] = useState<"riskIndex" | "manualPlanner" | "savedPlan" | "backtest">("riskIndex");
+  const [dashboardTab, setDashboardTab] = useState<"riskIndex" | "manualPlanner" | "savedPlan">("riskIndex");
   const [riskBandOpen, setRiskBandOpen] = useState(false);
   const [simulatedRisk, setSimulatedRisk] = useState(50);
   const [dcaMode, setDcaMode] = useState<"accumulate" | "distribute" | null>(null);
@@ -231,38 +324,84 @@ export default function Home() {
   const [notifySubmitted, setNotifySubmitted] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [mounted, setMounted] = useState(false);
+  /** Developer override for plan tier (Settings). Set to non-null to test gating. */
+  const [devPlanTierOverride, setDevPlanTierOverride] = useState<PlanTier | null>(null);
   useEffect(() => {
     setMounted(true);
     setUser(getAuthState());
   }, []);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (user) localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+    else localStorage.removeItem(AUTH_USER_KEY);
+  }, [user]);
 
   useEffect(() => {
     fetch("/api/risk")
       .then((res) => res.json())
-      .then((data: { risk_score?: number; price?: number }) => {
-        if (typeof data.risk_score === "number") setRiskValue(data.risk_score);
-        if (typeof data.price === "number") setBtcPriceUsd(data.price);
-        if (typeof data.risk_score === "number") setSimulatedRisk(Math.round(data.risk_score));
+      .then((data: { assets?: Record<string, AssetData>; updated_at?: string | null }) => {
+        if (data.assets && typeof data.assets === "object") {
+          setAllAssets(data.assets);
+          if (data.updated_at != null) setRiskUpdatedAt(data.updated_at);
+        }
       })
       .catch(() => {});
   }, []);
 
+  /** Effective asset for risk/price sync: builder asset when in Strategy Builder, else selected asset. */
+  const effectiveAsset = (dashboardTab === "manualPlanner" && builderAsset) ? builderAsset : selectedAsset;
+  useEffect(() => {
+    if (!effectiveAsset || !allAssets[effectiveAsset]) return;
+    const a = allAssets[effectiveAsset];
+    const score = typeof a.risk_score === "number" ? a.risk_score : 50;
+    const price = typeof a.price === "number" ? a.price : 67000;
+    setRiskValue(score);
+    setAssetPriceUsd(price);
+    setSimulatedRisk(Math.round(score));
+    setDisplayValue(Math.round(score));
+  }, [effectiveAsset, allAssets]);
+
   const getMockBtcPriceForRisk = (risk: number): number => {
-    const base = btcPriceUsd;
+    const base = assetPriceUsd;
     const factor = 1 + (risk / 100) * 0.8;
     return Math.round(base * factor);
   };
 
-  const isLoggedIn = mounted && user !== null;
-  const { trialActive } = getTrialState(user);
-  /** Can save: Standard OR (Free and trial active). Trial active = free plan with trial_ended_at in the future. */
-  const canSaveAndActivate = !!user && (user.plan_type === "standard" || (user.plan_type === "free" && trialActive));
-  const canAccessSimulatorPro = !!user && user.plan_type === "standard";
-  /** User is free and trial has ended — strategies visible but locked. */
-  const strategiesLocked = !!user && user.plan_type === "free" && user.trial_used && !trialActive;
-  const [authModal, setAuthModal] = useState<"login" | "register" | "forgot" | null>(null);
+  /** Price at risk for an asset: uses API floor/ceiling when present, else linear mock. */
+  const getPriceAtRisk = (assetId: string, risk: number): number => {
+    const a = allAssets[assetId];
+    if (!a?.components) return getMockBtcPriceForRisk(risk);
+    const floor = Number((a.components as { floor_price?: number }).floor_price);
+    const ceiling = Number((a.components as { ceiling_price?: number }).ceiling_price);
+    if (Number.isFinite(floor) && Number.isFinite(ceiling) && floor > 0 && ceiling > 0) {
+      return priceAtRiskLog(floor, ceiling, risk);
+    }
+    const base = typeof a.price === "number" ? a.price : assetPriceUsd;
+    const factor = 1 + (risk / 100) * 0.8;
+    return Math.round(base * factor);
+  };
+
+  function getRiskBadgeClass(score: number): string {
+    if (score <= 25) return "bg-emerald-500/25 text-emerald-200";
+    if (score <= 50) return "bg-amber-500/25 text-amber-200";
+    if (score <= 75) return "bg-orange-500/25 text-orange-200";
+    return "bg-red-500/25 text-red-200";
+  }
+
+  const userState = getUserState(mounted ? user : null, devPlanTierOverride);
+  const isLoggedIn = userState.isLoggedIn;
+  const planTier = userState.planTier;
+  const canSaveAndActivate = (planTier === "trial" || planTier === "standard") && userState.emailVerified;
+  /** Strategies visible but locked (free, trial ended). */
+  const strategiesLocked = planTier === "free" && userState.trialUsed;
+  const isStandard = planTier === "standard";
+  const canAccessSimulatorPro = planTier === "standard";
+  const [authModal, setAuthModal] = useState<"login" | "register" | "register-verify" | "forgot" | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
   const [forgotSuccess, setForgotSuccess] = useState(false);
+  const [trialConfirmOpen, setTrialConfirmOpen] = useState(false);
+  const [trialActivatedToast, setTrialActivatedToast] = useState(false);
+  const [upgradeComingSoonToast, setUpgradeComingSoonToast] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [saveGateModal, setSaveGateModal] = useState<"trial" | "upgrade" | null>(null);
   const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
@@ -552,19 +691,6 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const el = riskSectionRef.current;
-    if (!el) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) setRiskSectionVisible(true);
-      },
-      { threshold: 0.15, rootMargin: "0px 0px -40px 0px" }
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
     const el = dashboardSectionRef.current;
     if (!el) return;
     const observer = new IntersectionObserver(
@@ -589,32 +715,6 @@ export default function Home() {
   const annualBtcSold = dcaMode === "distribute" && strategyActive ? Math.min(btcHoldings, (sellPerInterval / btcPriceAtRisk) * intervalsPerYear) : 0;
   const estimatedFiatFromDistribute = annualBtcSold * btcPriceAtRisk;
   const estimatedFiatDisplay = currency === "AUD" ? estimatedFiatFromDistribute * USD_TO_AUD : estimatedFiatFromDistribute;
-
-  useEffect(() => {
-    if (!riskSectionVisible) return;
-    const prefersReducedMotion = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (prefersReducedMotion) {
-      setDisplayValue(riskValue);
-      setCountComplete(true);
-      return;
-    }
-    const start = performance.now();
-    let rafId: number;
-    const tick = (now: number) => {
-      const elapsed = now - start;
-      const t = Math.min(1, elapsed / COUNT_DURATION_MS);
-      const value = Math.floor(easeOutCubic(t) * riskValue);
-      setDisplayValue(value);
-      if (t < 1) {
-        rafId = requestAnimationFrame(tick);
-      } else {
-        setDisplayValue(riskValue);
-        setCountComplete(true);
-      }
-    };
-    rafId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafId);
-  }, [riskSectionVisible, riskValue]);
 
   const currentRiskForPlanner = riskValue;
   const btcPriceForPlanner = getMockBtcPriceForRisk(currentRiskForPlanner);
@@ -733,6 +833,7 @@ export default function Home() {
       dynamicMultiplierPct: strategyType === "dynamic" ? dynamicMultiplierPct : undefined,
       computedOrders,
       executions: initialExecutions,
+      asset_id: builderAsset ?? selectedAsset ?? "BTC",
     };
     setSavedPlans((prev) => [...prev, newPlan]);
     setStrategyNameInput("");
@@ -748,6 +849,7 @@ export default function Home() {
 
   const loadPlanForEdit = (plan: SavedStrategy) => {
     setEditingPlanId(plan.id);
+    setBuilderAsset(plan.asset_id ?? "BTC");
     setStrategyNameInput(plan.name);
     setDcaMode(plan.mode);
     setStrategyType(plan.strategyType ?? "fixed");
@@ -949,6 +1051,7 @@ export default function Home() {
       dynamicMultiplierPct: strategyType === "dynamic" ? dynamicMultiplierPct : undefined,
       computedOrders: isFixed ? existing.computedOrders : computedOrders,
       executions: existing.executions ?? [],
+      asset_id: existing.asset_id ?? "BTC",
     };
     setSavedPlans((prev) => prev.map((p) => (p.id === editingPlanId ? updated : p)));
     setShowUpdateConfirmModal(false);
@@ -1218,7 +1321,7 @@ export default function Home() {
             <input type="text" value={strategyNameInput} onChange={(e) => setStrategyNameInput(e.target.value)} placeholder="e.g. Accumulation 30–0" className="mt-4 w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white placeholder-white/40 focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" aria-label="Strategy name" />
             <div className="mt-6 flex gap-2">
               <button type="button" onClick={() => { setShowSaveStrategyModal(false); setStrategyNameInput(""); }} className="flex-1 rounded-lg border border-white/20 py-2 text-sm font-medium text-white/90 hover:bg-white/5" disabled={lockingIn}>Cancel</button>
-              <button type="button" onClick={() => { setLockingIn(true); setTimeout(() => { handleSaveStrategy(); setLockingIn(false); }, 400); }} className={`flex-1 rounded-lg py-2 text-sm font-medium text-white transition-all duration-200 ${lockingIn ? "bg-[#F28C28] scale-[1.01]" : "bg-[#F28C28] hover:bg-[#d97a22]"}`} disabled={lockingIn || !hasValidRange}>
+              <button type="button" onClick={() => { setLockingIn(true); setTimeout(() => { handleSaveStrategy(); setLockingIn(false); }, 400); }} className={`flex-1 rounded-lg py-2 text-sm font-medium text-white transition-all duration-200 ease ${lockingIn ? "bg-[#F28C28] scale-[1.01]" : "bg-[#F28C28] hover:bg-white hover:text-[#F28C28]"}`} disabled={lockingIn || !hasValidRange}>
                 {lockingIn ? "Saving…" : "Confirm Strategy"}
               </button>
             </div>
@@ -1236,7 +1339,7 @@ export default function Home() {
             </ul>
             <div className="mt-6 flex gap-2">
               <button type="button" onClick={() => setShowUpdateConfirmModal(false)} className="flex-1 rounded-lg border border-white/20 py-2 text-sm font-medium text-white/90 hover:bg-white/5">Cancel</button>
-              <button type="button" onClick={handleUpdateStrategy} className="flex-1 rounded-lg bg-[#F28C28] py-2 text-sm font-medium text-white hover:bg-[#d97a22] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0a1f35]">Confirm changes</button>
+              <button type="button" onClick={handleUpdateStrategy} className="flex-1 rounded-lg bg-[#F28C28] py-2 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0a1f35]">Confirm changes</button>
             </div>
           </div>
         </div>
@@ -1253,20 +1356,42 @@ export default function Home() {
           </div>
         </div>
       )}
-      {/* Trial gate: not logged in — primary = Start free trial, secondary = Log in */}
-      {saveGateModal === "trial" && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="save-gate-trial-title">
+      {/* Trial activation confirmation */}
+      {trialConfirmOpen && user && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="trial-confirm-title">
           <div className="w-full max-w-sm rounded-xl border border-white/15 bg-[#0a1f35] p-6 shadow-2xl">
-            <h3 id="save-gate-trial-title" className="text-sm font-semibold text-white">Start your free 7-day trial</h3>
-            <p className="mt-2 text-sm text-white/80">
-              Create an account to save strategies. After 7 days, your account stays on Free. No card required.
-            </p>
-            <div className="mt-6 flex flex-col gap-2">
-              <button type="button" onClick={() => { setSaveGateModal(null); setAuthModal("register"); }} className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white hover:bg-[#d97a22]">Start free trial</button>
-              <button type="button" onClick={() => { setSaveGateModal(null); setAuthModal("login"); }} className="w-full rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white/90 hover:bg-white/5">Log in</button>
-              <button type="button" onClick={() => setSaveGateModal(null)} className="w-full rounded-lg py-2 text-sm text-white/60 hover:text-white">Cancel</button>
+            <h2 id="trial-confirm-title" className="text-sm font-semibold text-white">Start your 7-day free trial?</h2>
+            <p className="mt-2 text-sm text-white/80">You&apos;ll be able to save and manage BTC strategies for 7 days. No credit card required. You can only activate this trial once.</p>
+            <div className="mt-6 flex gap-2">
+              <button type="button" onClick={() => setTrialConfirmOpen(false)} className="flex-1 rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white/90 hover:bg-white/5">Cancel</button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (user && !user.email_verified) {
+                    setTrialConfirmOpen(false);
+                    setAuthModal("register-verify");
+                    return;
+                  }
+                  const now = new Date();
+                  const trialEnds = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+                  setUser((u) => (u ? { ...u, trial_used: true, trial_started_at: now.toISOString(), trial_ended_at: trialEnds.toISOString() } : null));
+                  setTrialConfirmOpen(false);
+                  setTrialActivatedToast(true);
+                  setTimeout(() => setTrialActivatedToast(false), 4000);
+                  const draft = loadDraftFromStorage();
+                  if (draft) { applyDraftToState(draft); saveDraftAsStrategy(draft); setDashboardTab("savedPlan"); }
+                }}
+                className="flex-1 rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28]"
+              >
+                Start trial
+              </button>
             </div>
           </div>
+        </div>
+      )}
+      {trialActivatedToast && (
+        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-emerald-600/95 px-4 py-2.5 text-sm font-medium text-white shadow-lg">
+          Trial activated! You have 7 days to save and manage strategies.
         </div>
       )}
       {/* Upgrade to Standard — placeholder (TODO: Stripe) */}
@@ -1291,7 +1416,7 @@ export default function Home() {
                   );
                   setUpgradeModalOpen(false);
                 }}
-                className="flex-1 rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white hover:bg-[#d97a22]"
+                className="flex-1 rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28]"
               >
                 Confirm (mock)
               </button>
@@ -1360,7 +1485,7 @@ export default function Home() {
                 <button
                   type="submit"
                   disabled={supportSending || !supportMessage.trim()}
-                  className="rounded-lg bg-[#F28C28] px-4 py-2 text-xs font-medium text-white hover:bg-[#d97a22] disabled:opacity-60"
+                  className="rounded-lg bg-[#F28C28] px-4 py-2 text-xs font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] disabled:opacity-60"
                 >
                   {supportSending ? "Sending…" : "Send message"}
                 </button>
@@ -1369,96 +1494,91 @@ export default function Home() {
           </div>
         </div>
       )}
-      {/* Manage plan — subscription, payment method, history (UI-first, mock backend) */}
+      {/* Manage plan — subscription (tier-based UI) */}
       {managePlanOpen && user && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="manage-plan-title">
           <div className="w-full max-w-md rounded-xl border border-white/15 bg-[#0a1f35] p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
-            <h2 id="manage-plan-title" className="text-sm font-semibold text-white">
-              Manage plan
-            </h2>
-            <p className="mt-1 text-xs text-white/60">Adjust your subscription, payment method, and view payment history.</p>
+            <h2 id="manage-plan-title" className="text-sm font-semibold text-white">MANAGE SUBSCRIPTION</h2>
+            <p className="mt-1 text-xs text-white/60">Current plan: {planTier === "standard" ? "Standard" : planTier === "trial" ? `Trial (${userState.trialDaysRemaining} days remaining)` : "Free"}.</p>
 
-            <div className="mt-5 space-y-5 text-sm text-white/85">
-              {/* Manage subscription */}
-              <section className="rounded-lg border border-white/15 bg-white/[0.03] px-4 py-3">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-white/60">Manage subscription</h3>
-                <p className="mt-1.5 text-xs text-white/70">
-                  Current plan: {user.plan_type === "standard" ? "Standard" : strategiesLocked ? "Free (trial ended)" : trialActive ? "Free (trial active)" : "Free"}.
-                </p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {user.plan_type === "standard" ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (typeof window !== "undefined" && window.confirm("Downgrade to Free? You will keep existing strategies, but new saves require Standard.")) {
-                          const now = new Date();
-                          setUser((u) =>
-                            u
-                              ? {
-                                  ...u,
-                                  plan_type: "free",
-                                  trial_used: true,
-                                  trial_ended_at: now.toISOString(),
-                                }
-                              : null,
-                          );
-                        }
-                      }}
-                      className="rounded-lg border border-white/25 px-3 py-1.5 text-xs font-medium text-white/85 hover:bg-white/10"
-                    >
-                      Downgrade to Free
-                    </button>
+            <div className="mt-5 space-y-4">
+              {planTier === "free" && !userState.trialUsed && (
+                <>
+                  {!userState.emailVerified ? (
+                    <>
+                      <p className="text-sm text-white/80">Please verify your email to start your free trial.</p>
+                      <button type="button" onClick={() => { setManagePlanOpen(false); setAuthModal("register-verify"); }} className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28]">Verify email</button>
+                    </>
                   ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setManagePlanOpen(false);
-                        setUpgradeModalOpen(true);
-                      }}
-                      className="rounded-lg bg-[#F28C28] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#d97a22]"
-                    >
-                      Upgrade to Standard
-                    </button>
+                  <button
+                    type="button"
+                    onClick={() => { setTrialConfirmOpen(true); setManagePlanOpen(false); }}
+                    className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28]"
+                  >
+                    Start 7-day free trial
+                  </button>
                   )}
-                </div>
-              </section>
-
-              {/* Manage payment method */}
-              <section className="rounded-lg border border-white/15 bg-white/[0.03] px-4 py-3">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-white/60">Manage payment method</h3>
-                <p className="mt-1.5 text-xs text-white/70">Add or update your payment method. This is a placeholder UI until billing is connected.</p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button type="button" className="rounded-lg border border-white/25 px-3 py-1.5 text-xs font-medium text-white/85 hover:bg-white/10">
-                    Add card (mock)
+                  <button
+                    type="button"
+                    onClick={() => { setUpgradeComingSoonToast(true); setTimeout(() => setUpgradeComingSoonToast(false), 3000); }}
+                    className="w-full rounded-lg border border-white/25 py-2.5 text-sm font-medium text-white/90 hover:bg-white/5"
+                  >
+                    Upgrade to Standard — $9.99/month
                   </button>
-                  <button type="button" className="rounded-lg border border-white/25 px-3 py-1.5 text-xs font-medium text-white/85 hover:bg-white/10">
-                    Remove saved card (mock)
+                </>
+              )}
+              {planTier === "free" && userState.trialUsed && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => { setUpgradeComingSoonToast(true); setTimeout(() => setUpgradeComingSoonToast(false), 3000); }}
+                    className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28]"
+                  >
+                    Upgrade to Standard — $9.99/month
                   </button>
-                </div>
-              </section>
-
-              {/* Payment history */}
-              <section className="rounded-lg border border-white/15 bg-white/[0.03] px-4 py-3">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-white/60">Payment history</h3>
-                <p className="mt-1.5 text-xs text-white/70">No payments recorded yet. This section will show your invoices and receipts once billing is connected.</p>
-              </section>
+                  <p className="text-[11px] text-white/50">Your free trial has been used.</p>
+                </>
+              )}
+              {planTier === "trial" && (
+                <>
+                  <p className="text-sm text-white/80">Trial: {userState.trialDaysRemaining} days remaining</p>
+                  <div className="h-2 rounded-full bg-white/10 overflow-hidden">
+                    <div className="h-full bg-emerald-500/60 rounded-full" style={{ width: `${Math.max(0, 100 - (userState.trialDaysRemaining / 7) * 100)}%` }} />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { setUpgradeComingSoonToast(true); setTimeout(() => setUpgradeComingSoonToast(false), 3000); }}
+                    className="w-full rounded-lg border border-white/25 py-2.5 text-sm font-medium text-white/90 hover:bg-white/5"
+                  >
+                    Upgrade to Standard — $9.99/month
+                  </button>
+                </>
+              )}
+              {planTier === "standard" && (
+                <>
+                  <p className="text-sm text-white/80">Standard plan active</p>
+                  <button type="button" className="w-full rounded-lg border border-white/25 py-2.5 text-sm font-medium text-white/90 hover:bg-white/5">
+                    Manage billing
+                  </button>
+                  <button type="button" className="w-full text-sm text-white/50 hover:text-white/70">Cancel subscription</button>
+                </>
+              )}
             </div>
 
-            <button
-              type="button"
-              onClick={() => setManagePlanOpen(false)}
-              className="mt-6 w-full rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white/90 hover:bg-white/5"
-            >
-              Close
-            </button>
+            <button type="button" onClick={() => setManagePlanOpen(false)} className="mt-6 w-full rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white/90 hover:bg-white/5">Close</button>
           </div>
+        </div>
+      )}
+      {upgradeComingSoonToast && (
+        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-[#0a1f35] border border-white/20 px-4 py-2.5 text-sm text-white/90 shadow-lg">
+          Coming soon — payment integration in progress.
         </div>
       )}
       {/* Auth modal: Login / Register / Forgot */}
       {authModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
           <div className="w-full max-w-sm rounded-xl border border-white/15 bg-[#0a1f35] p-6 shadow-2xl">
-            <h2 id="auth-modal-title" className="text-sm font-semibold text-white">{authModal === "login" ? "Log in" : authModal === "register" ? "Create account" : "Reset password"}</h2>
+            <h2 id="auth-modal-title" className="text-sm font-semibold text-white">{authModal === "login" ? "Log in" : authModal === "register" ? "Create account" : authModal === "register-verify" ? "Verify your email" : "Reset password"}</h2>
             {authModal === "login" && (
               <form
                 className="mt-4 space-y-3"
@@ -1468,17 +1588,17 @@ export default function Home() {
                   const password = (e.currentTarget.elements.namedItem("login-password") as HTMLInputElement).value;
                   if (!email || !password) return;
                   setAuthLoading(true);
-                  // TODO: Replace with real login API + trial state from backend.
+                  // TODO: Replace with real login API; load user by email from backend.
                   setTimeout(() => {
                     const now = new Date();
-                    const trialEnds = new Date(now.getTime() + 6 * 24 * 60 * 60 * 1000);
-                    const newUser: User = {
+                    const stored = getAuthState();
+                    const newUser: User = stored && stored.email === email ? stored : {
                       id: "1",
                       email,
                       plan_type: "free",
-                      trial_used: true,
-                      trial_started_at: now.toISOString(),
-                      trial_ended_at: trialEnds.toISOString(),
+                      trial_used: false,
+                      trial_started_at: null,
+                      trial_ended_at: null,
                       subscription_status: "active",
                       stripe_customer_id: null,
                       created_at: now.toISOString(),
@@ -1499,7 +1619,7 @@ export default function Home() {
               >
                 <input id="login-email" type="email" placeholder="Email" required className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/40 focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" autoComplete="email" />
                 <input id="login-password" type="password" placeholder="Password" required className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/40 focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" autoComplete="current-password" />
-                <button type="submit" disabled={authLoading} className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white hover:bg-[#d97a22] disabled:opacity-70">{authLoading ? "Signing in…" : "Log in"}</button>
+                <button type="submit" disabled={authLoading} className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] disabled:opacity-70">{authLoading ? "Signing in…" : "Log in"}</button>
                 <div className="flex flex-col gap-1">
                   <button type="button" onClick={() => { setForgotSuccess(false); setAuthModal("forgot"); }} className="w-full text-left text-sm text-white/60 hover:text-white">Forgot password?</button>
                   <button type="button" onClick={() => setAuthModal("register")} className="w-full text-left text-sm text-white/60 hover:text-white">Create account</button>
@@ -1508,6 +1628,7 @@ export default function Home() {
             )}
             {authModal === "register" && (
               <form
+                noValidate
                 className="mt-4 space-y-3"
                 onSubmit={(e) => {
                   e.preventDefault();
@@ -1517,30 +1638,23 @@ export default function Home() {
                   if (!email || !password) return;
                   setAuthLoading(true);
                   const now = new Date();
-                  const trialEnds = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-                  // TODO: Replace with real signup + email verification + referral tracking.
+                  // TODO: Replace with real signup API + email verification (e.g. Resend, SendGrid, Supabase).
                   setTimeout(() => {
                     const newUser: User = {
                       id: "1",
                       email,
                       plan_type: "free",
-                      trial_used: true,
-                      trial_started_at: now.toISOString(),
-                      trial_ended_at: trialEnds.toISOString(),
+                      trial_used: false,
+                      trial_started_at: null,
+                      trial_ended_at: null,
                       subscription_status: "active",
                       stripe_customer_id: null,
                       created_at: now.toISOString(),
-                      email_verified: true,
+                      email_verified: false,
                       referral_code: referral || null,
                     };
                     setUser(newUser);
-                    const draft = loadDraftFromStorage();
-                    if (draft) {
-                      applyDraftToState(draft);
-                      saveDraftAsStrategy(draft);
-                    }
-                    setDashboardTab("savedPlan");
-                    setAuthModal(null);
+                    setAuthModal("register-verify");
                     setAuthLoading(false);
                   }, 400);
                 }}
@@ -1548,10 +1662,28 @@ export default function Home() {
                 <input id="reg-email" name="reg-email" type="email" placeholder="Email" required className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/40 focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" autoComplete="email" />
                 <input id="reg-password" name="reg-password" type="password" placeholder="Password" required className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/40 focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" autoComplete="new-password" />
                 <input id="reg-referral" name="reg-referral" type="text" placeholder="Referral code (optional)" className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/35 focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" />
-                <button type="submit" disabled={authLoading} className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white hover:bg-[#d97a22] disabled:opacity-70">{authLoading ? "Creating account…" : "Create account"}</button>
-                <p className="text-[11px] text-white/50">7-day free trial. After the trial ends your account stays on Free. No card required.</p>
+                <button type="submit" disabled={authLoading} className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] disabled:opacity-70">{authLoading ? "Creating account…" : "Create account"}</button>
+                <p className="text-[11px] text-white/50">7-day free trial after you verify your email. No card required.</p>
                 <button type="button" onClick={() => setAuthModal("login")} className="w-full text-left text-sm text-white/60 hover:text-white">Already have an account? Log in</button>
               </form>
+            )}
+            {authModal === "register-verify" && user && (
+              <div className="mt-4 space-y-4">
+                <p className="text-sm text-white/90">We&apos;ve sent a verification link to <span className="font-medium text-white">{user.email}</span>. Please check your inbox and click the link to activate your account.</p>
+                <div className="flex flex-col gap-2">
+                  <button type="button" className="w-full rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white/90 hover:bg-white/5">Resend email</button>
+                  <button type="button" onClick={() => setAuthModal("register")} className="w-full text-sm text-white/60 hover:text-white">Use a different email</button>
+                  {/* Dev bypass: replace with real email verification in production */}
+                  <button
+                    type="button"
+                    onClick={() => { setUser((u) => (u ? { ...u, email_verified: true } : null)); setAuthModal(null); const draft = loadDraftFromStorage(); if (draft) { applyDraftToState(draft); saveDraftAsStrategy(draft); setDashboardTab("savedPlan"); } }}
+                    className="mt-2 rounded-lg bg-white/10 py-2 text-xs font-medium text-white/70 hover:bg-white/15 border border-white/20"
+                  >
+                    Verify now (dev)
+                  </button>
+                </div>
+                <button type="button" onClick={() => setAuthModal(null)} className="w-full text-sm text-white/50 hover:text-white">Close</button>
+              </div>
             )}
             {authModal === "forgot" && (
               forgotSuccess ? (
@@ -1562,7 +1694,7 @@ export default function Home() {
               ) : (
                 <form className="mt-4 space-y-3" onSubmit={(e) => { e.preventDefault(); setForgotSuccess(true); }}>
                   <input type="email" placeholder="Email" required className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/40 focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" autoComplete="email" />
-                  <button type="submit" className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white hover:bg-[#d97a22]">Send reset link</button>
+                  <button type="submit" className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28]">Send reset link</button>
                   <button type="button" onClick={() => { setForgotSuccess(false); setAuthModal("login"); }} className="w-full text-sm text-white/60 hover:text-white">Back to log in</button>
                 </form>
               )
@@ -1571,7 +1703,7 @@ export default function Home() {
           </div>
         </div>
       )}
-      {/* Settings (when logged in) — accessible from dashboard */}
+      {/* Settings (when logged in) — profile dropdown / Manage plan link */}
       {settingsOpen && user && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="settings-title">
           <div className="w-full max-w-md rounded-xl border border-white/15 bg-[#0a1f35] p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
@@ -1580,12 +1712,21 @@ export default function Home() {
               <div>
                 <p className="text-[11px] font-medium text-white/60 uppercase tracking-wider">Account</p>
                 <p className="mt-1 text-sm text-white/90">{user.email}</p>
-                <p className="mt-0.5 text-[11px] text-white/50">Plan: {user.plan_type === "standard" ? "Standard" : "Free"}{user.trial_used ? " (trial used)" : ""}</p>
+                <p className="mt-0.5 text-[11px] text-white/50">Plan: {planTier === "standard" ? "Standard" : planTier === "trial" ? `Trial (${userState.trialDaysRemaining} days left)` : "Free"}{user.trial_used ? " (trial used)" : ""}</p>
               </div>
               <div>
                 <p className="text-[11px] font-medium text-white/60 uppercase tracking-wider">Subscription</p>
-                <p className="mt-1 text-sm text-white/80">Standard — $19 AUD/month. Manage or cancel via Stripe.</p>
-                <button type="button" className="mt-2 rounded-lg border border-white/20 px-3 py-1.5 text-xs font-medium text-white/80 hover:bg-white/5">Manage subscription</button>
+                <button type="button" onClick={() => { setSettingsOpen(false); setManagePlanOpen(true); }} className="mt-1 rounded-lg border border-white/20 px-3 py-1.5 text-xs font-medium text-white/80 hover:bg-white/5">Manage plan</button>
+              </div>
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+                <p className="text-[11px] font-medium text-amber-200/80 uppercase tracking-wider">Developer</p>
+                <p className="mt-1 text-xs text-white/60">Override plan tier for testing:</p>
+                <select value={devPlanTierOverride ?? ""} onChange={(e) => setDevPlanTierOverride(e.target.value ? (e.target.value as PlanTier) : null)} className="mt-2 w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]">
+                  <option value="">Use real plan</option>
+                  <option value="free">Free</option>
+                  <option value="trial">Trial</option>
+                  <option value="standard">Standard</option>
+                </select>
               </div>
               <div className="pt-4 border-t border-white/10">
                 <button type="button" onClick={() => { if (typeof window !== "undefined" && window.confirm("Permanently delete your account and all data?")) { setUser(null); setSettingsOpen(false); } }} className="text-sm text-red-300/90 hover:text-red-300">Delete account</button>
@@ -1595,7 +1736,7 @@ export default function Home() {
           </div>
         </div>
       )}
-      {/* Create Strategy wizard modal */}
+      {/* Strategy Builder (create strategy) modal */}
       {wizardOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="wizard-title">
           <div className="w-full max-w-md rounded-xl border border-white/15 bg-[#0a1f35] shadow-2xl max-h-[90vh] overflow-hidden flex flex-col">
@@ -1854,7 +1995,7 @@ export default function Home() {
                     type="button"
                     onClick={() => { if (wizardStep === 3 && wizardCanProceedStep3) setWizardStep(4); else if (wizardStep === 4) setWizardStep(5); }}
                     disabled={wizardStep === 3 && !wizardCanProceedStep3}
-                    className="rounded-lg bg-[#F28C28] py-2 px-4 text-sm font-medium text-white hover:bg-[#d97a22] focus:outline-none focus:ring-2 focus:ring-[#F28C28] disabled:opacity-50 disabled:pointer-events-none"
+                    className="rounded-lg bg-[#F28C28] py-2 px-4 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] disabled:opacity-50 disabled:pointer-events-none"
                   >
                     Next
                   </button>
@@ -1869,7 +2010,7 @@ export default function Home() {
                         setShowSaveStrategyModal(true);
                         setStrategyNameInput("");
                       }}
-                      className="rounded-lg bg-[#F28C28] py-2 px-4 text-sm font-medium text-white hover:bg-[#d97a22] focus:outline-none focus:ring-2 focus:ring-[#F28C28]"
+                      className="rounded-lg bg-[#F28C28] py-2 px-4 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28]"
                     >
                       Save Strategy
                     </button>
@@ -1878,16 +2019,14 @@ export default function Home() {
                       type="button"
                       onClick={() => {
                         persistDraftFromCurrentState();
-                        if (!isLoggedIn) {
-                          setSaveGateModal("trial");
-                        } else {
-                          // Logged in but cannot save → trial expired Free, prompt upgrade.
-                          setUpgradeModalOpen(true);
-                        }
+                        if (!isLoggedIn) { setAuthModal("register"); return; }
+                        if (planTier === "free" && !userState.emailVerified) { setAuthModal("register-verify"); return; }
+                        if (planTier === "free" && userState.trialUsed) { setManagePlanOpen(true); return; }
+                        setTrialConfirmOpen(true);
                       }}
-                      className="rounded-lg bg-[#F28C28] py-2 px-4 text-sm font-medium text-white hover:bg-[#d97a22] focus:outline-none focus:ring-2 focus:ring-[#F28C28] inline-block text-center"
+                      className="rounded-lg bg-[#F28C28] py-2 px-4 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] inline-block text-center"
                     >
-                      {isLoggedIn ? "Upgrade to save" : "Start free 7-day trial to save"}
+                      {!isLoggedIn ? "Create account to save" : planTier === "free" && !userState.emailVerified ? "Please verify your email to start your free trial" : planTier === "free" && userState.trialUsed ? "Upgrade to Standard to save strategies" : "Start your 7-day free trial to save strategies"}
                     </button>
                   )}
                 </>
@@ -1918,21 +2057,6 @@ export default function Home() {
                 transform: none;
               }
             }
-            @keyframes ambientShift {
-              0%, 100% { background-position: 50% 40%; }
-              50% { background-position: 50% 48%; }
-            }
-            .hero-ambient {
-              animation: ambientShift 20s ease-in-out infinite;
-            }
-            @keyframes heroVignette {
-              0%, 100% { opacity: 0.4; }
-              50% { opacity: 0.6; }
-            }
-            .hero-vignette {
-              background: radial-gradient(ellipse 100% 100% at 50% 50%, transparent 45%, rgba(0,0,0,0.25) 100%);
-              animation: heroVignette 12s ease-in-out infinite;
-            }
             @keyframes logoFloat {
               0%, 100% { transform: translateY(0); }
               50% { transform: translateY(-6px); }
@@ -1948,20 +2072,8 @@ export default function Home() {
               animation: ctaGlow 3s ease-in-out infinite;
             }
             @media (prefers-reduced-motion: reduce) {
-              .hero-ambient { animation: none; }
               .hero-logo-float { animation: none; }
               .cta-glow { animation: none; }
-              .hero-vignette { animation: none; }
-            }
-            .risk-section-inview {
-              opacity: 1;
-              transform: translateY(0);
-            }
-            @media (prefers-reduced-motion: reduce) {
-              #current-btc-risk > div {
-                opacity: 1;
-                transform: none;
-              }
             }
             @keyframes riskGlowPulse {
               0%, 100% { opacity: 0.12; transform: translate(-50%, -50%) scale(1); }
@@ -2164,7 +2276,7 @@ export default function Home() {
             <button
               type="button"
               onClick={() => dashboardSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
-              className="rounded-lg bg-[#F28C28] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#d97a22] transition-colors focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0E2A47] cta-glow"
+              className="rounded-lg bg-[#F28C28] px-4 py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0E2A47]"
             >
               Explore Framework
             </button>
@@ -2173,7 +2285,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => setProfileMenuOpen((open) => !open)}
-                  className="flex h-9 w-9 items-center justify-center rounded-full bg-[#F28C28] shadow-md shadow-black/40 ring-1 ring-white/20 hover:ring-white/40 focus:outline-none focus:ring-2 focus:ring-white/70"
+                  className="flex h-9 w-9 items-center justify-center rounded-full bg-[#F28C28] shadow-md shadow-black/40 ring-1 ring-white/20 transition-all duration-200 ease hover:bg-[rgba(255,255,255,0.1)] hover:ring-white/40 focus:outline-none focus:ring-2 focus:ring-white/70"
                   aria-label="Account menu"
                   aria-haspopup="menu"
                   aria-expanded={profileMenuOpen}
@@ -2268,15 +2380,13 @@ export default function Home() {
         </header>
 
         <div
-          className="relative flex min-h-[calc(100vh-4rem)] flex-col items-center justify-center overflow-hidden px-6"
+          className="relative flex min-h-[calc(100vh-4rem)] flex-col items-center justify-center overflow-hidden px-6 bg-[#061826]"
         >
-          <div className="hero-ambient pointer-events-none absolute inset-0" style={{ background: "radial-gradient(ellipse 100% 80% at 50% 38%, rgba(255,255,255,0.06) 0%, transparent 55%)" }} aria-hidden />
-          <div className="hero-vignette pointer-events-none absolute inset-0" aria-hidden />
           <main className="relative z-10 flex max-w-2xl flex-col items-center text-center">
             <img
               src="/brand/csh-mark-inverse.svg"
               alt=""
-              className="hero-logo-float relative z-10 mb-8 block w-[140px] h-auto"
+              className="hero-logo-float relative z-10 mb-8 block w-[168px] h-auto"
               style={{ filter: "drop-shadow(0 0 20px rgba(242, 140, 40, 0.15))" }}
               aria-hidden
             />
@@ -2296,7 +2406,7 @@ export default function Home() {
               <button
                 type="button"
                 onClick={() => dashboardSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
-                className="cta-glow rounded-lg bg-[#F28C28] px-6 py-3 text-sm font-medium text-white hover:bg-[#d97a22] transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0E2A47]"
+                className="rounded-lg bg-[#F28C28] px-6 py-3 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0E2A47]"
               >
                 Explore Framework
               </button>
@@ -2305,51 +2415,9 @@ export default function Home() {
         </div>
 
       <section
-        id="current-btc-risk"
-        ref={riskSectionRef}
-        className="relative z-10 min-h-[60vh] px-6 pt-28 pb-24 md:pt-36 md:pb-32"
-      >
-        <div className="pointer-events-none absolute inset-0" style={{ background: "radial-gradient(ellipse 100% 75% at 50% 44%, rgba(255,255,255,0.05) 0%, transparent 55%)" }} aria-hidden />
-        <div
-          className={`relative mx-auto max-w-2xl text-center transition-all duration-700 ease-out ${
-            riskSectionVisible ? "risk-section-inview" : "opacity-0 translate-y-8"
-          }`}
-        >
-          <p className="mb-4 text-xs font-semibold uppercase tracking-[0.2em] text-white/65">
-            CURRENT BTC RISK
-          </p>
-          <p
-            className={`relative z-10 mx-auto mb-8 w-fit cursor-default text-6xl font-bold tabular-nums md:text-7xl transition-colors duration-200 risk-number-glow ${riskNumberHover ? "risk-number-glow-hover" : ""}`}
-            style={{
-              color: getRiskColor(displayValue),
-              ["--risk-glow" as string]: riskNumberHover ? "rgba(255,240,245,0.32)" : "rgba(255,240,245,0.22)",
-            }}
-            onMouseEnter={() => setRiskNumberHover(true)}
-            onMouseLeave={() => setRiskNumberHover(false)}
-            aria-label={`Risk level ${riskValue}`}
-          >
-            {displayValue}
-          </p>
-          <p className="mx-auto mb-8 text-xs tracking-wide text-white/55">
-            0 (Low) → 100 (Extreme)
-          </p>
-          <p className="mx-auto mb-10 max-w-md text-sm leading-relaxed text-white/65">
-            Long-term regression of Bitcoin price data measures relative market risk. Lower values historically reflect earlier cycle positioning. Higher values reflect later cycle positioning.
-          </p>
-          <button
-            type="button"
-            onClick={() => dashboardSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
-            className="inline-block rounded-lg border border-white/30 bg-transparent px-6 py-3 text-center text-sm font-medium text-white/90 transition-all duration-200 ease-out hover:border-[#F28C28] hover:bg-white/5 hover:text-white focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]"
-          >
-            Explore Framework
-          </button>
-        </div>
-      </section>
-
-      <section
         id="btc-dashboard"
         ref={dashboardSectionRef}
-        className="relative z-10 min-h-[60vh] px-6 pt-24 pb-28 md:pt-32 md:pb-36"
+        className="relative z-10 min-h-[60vh] bg-[#061826] px-6 pt-24 pb-28 md:pt-32 md:pb-36"
       >
         <div className="pointer-events-none absolute inset-0 opacity-100" style={{ background: "radial-gradient(ellipse 110% 75% at 50% 50%, rgba(255,255,255,0.06) 0%, transparent 55%)" }} aria-hidden />
         <div
@@ -2359,72 +2427,125 @@ export default function Home() {
         >
           <div className="absolute -inset-6 rounded-2xl opacity-60 blur-xl" style={{ background: "radial-gradient(ellipse 80% 50% at 50% 40%, rgba(255,255,255,0.06) 0%, transparent 70%)" }} aria-hidden />
           <div className="relative rounded-xl border border-white/15 bg-white/[0.09] shadow-2xl shadow-black/25 backdrop-blur-sm ring-1 ring-white/10" style={{ boxShadow: "0 0 0 1px rgba(255,255,255,0.08) inset, 0 25px 50px -12px rgba(0,0,0,0.3)" }}>
+            {/* Top-level header: app name + trial badge + currency */}
             <div className="flex items-center justify-between border-b border-white/10 px-6 py-4 md:px-8 md:py-5">
-              <h2 className="text-lg font-semibold text-white md:text-xl">
-                BTC Dashboard
-              </h2>
-              <div className="flex items-center gap-3">
-                {mounted && isLoggedIn && (
-                  <button type="button" onClick={() => setSettingsOpen(true)} className="text-xs font-medium text-white/70 hover:text-white transition-colors">
-                    Settings
-                  </button>
+              <div className="flex items-center gap-3 min-w-0">
+                <h2 className="text-lg font-semibold text-white md:text-xl truncate">Dashboard</h2>
+                {planTier === "trial" && userState.trialDaysRemaining > 0 && (
+                  <span className="shrink-0 rounded-full bg-emerald-500/20 px-2.5 py-1 text-xs font-medium text-emerald-300">Trial: {userState.trialDaysRemaining} day{userState.trialDaysRemaining !== 1 ? "s" : ""} remaining</span>
                 )}
-              <div className="flex rounded-lg border border-white/15 bg-white/5 p-0.5">
-                <button
-                  type="button"
-                  onClick={() => setCurrency("USD")}
-                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                    currency === "USD" ? "bg-[#F28C28] text-white" : "text-white/70 hover:text-white"
-                  }`}
-                  aria-pressed={currency === "USD"}
-                >
-                  USD
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCurrency("AUD")}
-                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                    currency === "AUD" ? "bg-[#F28C28] text-white" : "text-white/70 hover:text-white"
-                  }`}
-                  aria-pressed={currency === "AUD"}
-                >
-                  AUD
-                </button>
               </div>
+              <div className="flex items-center gap-3 shrink-0">
+                <div className="flex rounded-lg border border-white/15 bg-white/5 p-0.5">
+                  <button type="button" onClick={() => setCurrency("USD")} className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${currency === "USD" ? "bg-[#F28C28] text-white" : "text-white/70 hover:text-white"}`} aria-pressed={currency === "USD"}>USD</button>
+                  <button type="button" onClick={() => setCurrency("AUD")} className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${currency === "AUD" ? "bg-[#F28C28] text-white" : "text-white/70 hover:text-white"}`} aria-pressed={currency === "AUD"}>AUD</button>
+                </div>
               </div>
             </div>
 
+            {/* Top-level tabs */}
             <div className="flex border-b border-white/10 p-1">
               {[
                 { id: "riskIndex" as const, label: "Risk Index" },
                 { id: "manualPlanner" as const, label: "Strategy Builder" },
                 { id: "savedPlan" as const, label: "My Strategies" },
-                { id: "backtest" as const, label: "Simulator (Pro)", locked: !canAccessSimulatorPro },
-              ].map(({ id, label, locked }) => (
+              ].map(({ id, label }) => (
                 <button
                   key={id}
                   type="button"
-                  onClick={() => locked && id === "backtest" ? setDashboardTab("backtest") : setDashboardTab(id)}
-                  className={`flex flex-1 items-center justify-center gap-1 rounded-md py-2.5 text-xs font-medium transition-colors ${
-                    dashboardTab === id ? "bg-white/10 text-white" : "text-white/60 hover:text-white"
-                  } ${locked && id === "backtest" ? "opacity-80" : ""}`}
+                  onClick={() => {
+                    if (id === "riskIndex") setSelectedAsset(null);
+                    if (id === "manualPlanner") setBuilderAsset(null);
+                    setDashboardTab(id);
+                  }}
+                  className={`flex flex-1 items-center justify-center gap-1 rounded-lg py-2.5 text-xs font-medium transition-all duration-200 ease ${
+                    dashboardTab === id ? "bg-white/10 text-white" : "text-white/60 hover:bg-white/[0.08] hover:text-white"
+                  }`}
+                  style={{ borderRadius: 8 }}
                   aria-pressed={dashboardTab === id}
-                  title={locked && id === "backtest" ? "Start free trial to unlock" : undefined}
                 >
                   {label}
-                  {locked && id === "backtest" && <span className="text-[10px] text-white/40" aria-hidden>🔒</span>}
                 </button>
               ))}
             </div>
 
-            {/* Risk Index tab — daily check */}
-            {dashboardTab === "riskIndex" && (
+            {/* Risk Index tab: list or asset detail with ← All Assets inside content */}
+            {dashboardTab === "riskIndex" && selectedAsset === null && (
+              <>
+                <div className="px-6 py-5 md:px-8 md:py-6 space-y-0">
+                  {ASSET_ORDER.map((id) => {
+                    const a = allAssets[id];
+                    if (!a) return null;
+                    const score = typeof a.risk_score === "number" ? a.risk_score : 50;
+                    const price = typeof a.price === "number" ? a.price : 0;
+                    const isLocked = !isStandard && id !== "BTC";
+                    const logoFailed = tokenLogoFailed.has(id);
+                    return (
+                      <div key={a.asset_id} className="relative">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (isLocked) {
+                              if (planTier === "anonymous") { setAuthModal("register"); }
+                              else { setManagePlanOpen(true); }
+                            } else setSelectedAsset(a.asset_id);
+                          }}
+                          className={`w-full flex items-center gap-4 px-4 py-4 rounded-lg border border-white/10 bg-white/[0.03] transition-all duration-200 ease text-left cursor-pointer ${isLocked ? "opacity-90" : "hover:bg-[rgba(255,255,255,0.03)]"}`}
+                        >
+                          <span className={`relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white overflow-hidden ${ASSET_COLORS[id] ?? "bg-white/20"}`}>
+                            {!logoFailed && TOKEN_LOGOS[id] ? (
+                              <img src={TOKEN_LOGOS[id]} alt="" className="h-full w-full object-cover" onError={() => setTokenLogoFailed((s) => new Set(s).add(id))} />
+                            ) : null}
+                            <span className={logoFailed || !TOKEN_LOGOS[id] ? "absolute inset-0 flex items-center justify-center" : "sr-only"}>{a.asset_id}</span>
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <p className="font-medium text-white truncate">{a.name}</p>
+                            <p className="text-xs text-white/55">{a.asset_id}</p>
+                          </div>
+                          {isLocked ? (
+                            <span className="shrink-0 flex items-center gap-1.5 text-xs text-white/50">
+                              <span aria-hidden>🔒</span> Standard plan
+                            </span>
+                          ) : (
+                            <>
+                              <p className="text-sm font-semibold tabular-nums text-white shrink-0">
+                                {formatPriceByAsset(a.asset_id, price, currency, USD_TO_AUD)}
+                              </p>
+                              <p className="text-sm tabular-nums text-white/50 shrink-0 w-10 text-center">—</p>
+                              <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold tabular-nums ${getRiskBadgeClass(score)}`}>
+                                {score % 1 === 0 ? score : score.toFixed(1)}
+                              </span>
+                            </>
+                          )}
+                        </button>
+                        {isLocked && (
+                          <div role="button" tabIndex={0} onClick={() => { if (planTier === "anonymous") setAuthModal("register"); else setManagePlanOpen(true); }} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (planTier === "anonymous") setAuthModal("register"); else setManagePlanOpen(true); } }} className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/40 backdrop-blur-[2px] cursor-pointer" aria-label={planTier === "anonymous" ? "Create a free account to get started" : "Upgrade to Standard to unlock all assets"}>
+                            <span className="text-xs text-white/80 flex items-center gap-1.5">🔒 Standard plan</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="px-6 pb-5 md:px-8 md:pb-6 pt-0">
+                  <p className="text-xs text-white/50">
+                    Last updated: {riskUpdatedAt ? new Date(riskUpdatedAt).toLocaleString() : "—"}
+                  </p>
+                </div>
+              </>
+            )}
+
+            {/* Risk Index tab — asset detail (with ← All Assets link inside content) */}
+            {dashboardTab === "riskIndex" && selectedAsset !== null && (
               <div className="px-6 py-5 md:px-8 md:py-6">
+                <button type="button" onClick={() => setSelectedAsset(null)} className="mb-4 text-sm font-medium text-white/80 hover:text-white transition-colors">
+                  ← All Assets
+                </button>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 border-b border-white/10 pb-5">
                   <div className="min-w-0">
-                    <p className="text-[11px] uppercase tracking-wider text-white/50">BTC Price</p>
+                    <p className="text-[11px] uppercase tracking-wider text-white/50">{selectedAsset ?? "BTC"} Price</p>
                     <p className="mt-1.5 text-lg font-bold tabular-nums text-white md:text-xl">
-                      {symbol}{Math.round(currency === "AUD" ? btcPriceUsd * USD_TO_AUD : btcPriceUsd).toLocaleString()}
+                      {formatPriceByAsset(selectedAsset ?? "BTC", assetPriceUsd, currency, USD_TO_AUD)}
                     </p>
                   </div>
                   <div className="min-w-0">
@@ -2434,7 +2555,7 @@ export default function Home() {
                     </p>
                   </div>
                   <div className="min-w-0">
-                    <p className="text-[11px] uppercase tracking-wider text-white/50">Current BTC Risk</p>
+                    <p className="text-[11px] uppercase tracking-wider text-white/50">Current {selectedAsset ?? "BTC"} Risk</p>
                     <p className="mt-1.5 text-lg font-bold tabular-nums md:text-xl" style={{ color: getRiskColor(simulatedRisk) }}>
                       {simulatedRisk}
                     </p>
@@ -2472,7 +2593,7 @@ export default function Home() {
                   <p className="mt-2 text-[10px] text-white/50">Drag to explore; releases to current risk.</p>
                 </div>
                 <p className="mt-5 text-xs leading-relaxed text-white/70">
-                  Long-term regression of Bitcoin price data measures relative market risk. Lower values historically reflect earlier cycle positioning. Higher values reflect later cycle positioning.
+                  Long-term regression of {allAssets[selectedAsset!]?.name ?? selectedAsset} price data measures relative market risk. Lower values historically reflect earlier cycle positioning. Higher values reflect later cycle positioning.
                 </p>
                 <div className="mt-5 border-t border-white/10 pt-5">
                   <button
@@ -2481,7 +2602,7 @@ export default function Home() {
                     className="flex w-full cursor-pointer items-center justify-between rounded-lg px-2 py-2.5 text-left text-xs font-medium text-white/70 transition-colors hover:bg-white/[0.06] hover:text-white focus:outline-none focus-visible:ring-0"
                     aria-expanded={riskBandOpen}
                   >
-                    <span>View Full BTC Risk Band</span>
+                    <span>View Full {selectedAsset ?? "BTC"} Risk Band</span>
                     <span className="shrink-0 transition-transform duration-200" style={{ transform: riskBandOpen ? "rotate(180deg)" : "none" }}>▼</span>
                   </button>
                   {riskBandOpen && (
@@ -2495,24 +2616,27 @@ export default function Home() {
                         <thead className="sticky top-0 z-10 border-b border-white/15 bg-[#081826] text-xs uppercase tracking-wider text-white/80 shadow-[0_1px_0_0_rgba(255,255,255,0.08)]">
                           <tr>
                             <th className="px-4 py-3 font-medium w-1/2 text-center">Risk</th>
-                            <th className="px-4 py-3 font-medium w-1/2 text-center">BTC Price</th>
+                            <th className="px-4 py-3 font-medium w-1/2 text-center">{selectedAsset ?? "BTC"} PRICE</th>
                           </tr>
                         </thead>
-                        <tbody style={{ height: RISK_BAND_VALUES.length * RISK_BAND_ROW_HEIGHT }}>
+                        <tbody style={{ height: RISK_BAND_LEVELS.length * RISK_BAND_ROW_HEIGHT }}>
                           {(() => {
+                            const assetId = selectedAsset ?? "BTC";
+                            const closestLevel = RISK_BAND_LEVELS.reduce((prev, curr) => Math.abs(curr - simulatedRisk) < Math.abs(prev - simulatedRisk) ? curr : prev);
                             const containerHeight = riskBandContainerRef.current?.clientHeight ?? 288;
                             const visibleCount = Math.ceil(containerHeight / RISK_BAND_ROW_HEIGHT) + RISK_BAND_VISIBLE_EXTRA * 2;
                             const visibleStart = Math.max(0, Math.floor(riskBandScrollTop / RISK_BAND_ROW_HEIGHT) - RISK_BAND_VISIBLE_EXTRA);
-                            const visibleEnd = Math.min(RISK_BAND_VALUES.length - 1, visibleStart + visibleCount - 1);
+                            const visibleEnd = Math.min(RISK_BAND_LEVELS.length - 1, visibleStart + visibleCount - 1);
                             const topHeight = visibleStart * RISK_BAND_ROW_HEIGHT;
-                            const bottomHeight = (RISK_BAND_VALUES.length - 1 - visibleEnd) * RISK_BAND_ROW_HEIGHT;
+                            const bottomHeight = (RISK_BAND_LEVELS.length - 1 - visibleEnd) * RISK_BAND_ROW_HEIGHT;
                             return (
                               <>
                                 {topHeight > 0 && (
                                   <tr aria-hidden><td colSpan={2} style={{ height: topHeight, padding: 0, border: 0, lineHeight: 0 }} /></tr>
                                 )}
-                                {RISK_BAND_VALUES.slice(visibleStart, visibleEnd + 1).map((r) => {
-                                  const isCurrent = Math.abs(simulatedRisk - r) <= 2.5; // highlight closest row for step-5 band
+                                {RISK_BAND_LEVELS.slice(visibleStart, visibleEnd + 1).map((r) => {
+                                  const priceUsd = getPriceAtRisk(assetId, r);
+                                  const isCurrent = r === closestLevel;
                                   return (
                                     <tr
                                       key={r}
@@ -2521,7 +2645,7 @@ export default function Home() {
                                     >
                                       <td className="risk-band-cell px-4 py-0 tabular-nums font-medium text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.4)] align-middle text-center" style={{ color: getRiskColor(r), height: RISK_BAND_ROW_HEIGHT }}>{formatRiskValue(r)}</td>
                                       <td className="risk-band-cell px-4 py-0 tabular-nums text-white/95 drop-shadow-[0_1px_1px_rgba(0,0,0,0.4)] align-middle text-center" style={{ height: RISK_BAND_ROW_HEIGHT }}>
-                                        {symbol}{Math.round((currency === "AUD" ? getMockBtcPriceForRisk(r) * USD_TO_AUD : getMockBtcPriceForRisk(r))).toLocaleString()}
+                                        {formatPriceByAsset(assetId, priceUsd, currency, USD_TO_AUD)}
                                       </td>
                                     </tr>
                                   );
@@ -2540,9 +2664,45 @@ export default function Home() {
               </div>
             )}
 
-            {/* Strategy Builder tab — Create (wizard) or Edit (full form) */}
+            {/* Strategy Builder tab — Asset selector first, then Create (wizard) or Edit (full form) */}
             {dashboardTab === "manualPlanner" && (
               <div className="px-6 py-5 md:px-8 md:py-6">
+                {builderAsset === null ? (
+                  <>
+                    <p className="mb-4 text-sm text-white/80">Which asset would you like to build a strategy for?</p>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      {ASSET_ORDER.map((id) => {
+                        const a = allAssets[id];
+                        const isStandardAsset = id !== "BTC";
+                        const isLockedBuilder = !isStandard && isStandardAsset;
+                        const logoFailedBuilder = tokenLogoFailed.has(id);
+                        return (
+                          <button
+                            key={id}
+                            type="button"
+                            onClick={() => { if (isLockedBuilder) { if (planTier === "anonymous") setAuthModal("login"); else setManagePlanOpen(true); } else setBuilderAsset(id); }}
+                            disabled={isLockedBuilder}
+                            className={`relative flex flex-col items-center gap-2 rounded-xl border px-4 py-5 transition-colors text-left ${
+                              isLockedBuilder ? "cursor-not-allowed border-white/15 bg-white/[0.04] opacity-70" : isStandardAsset ? "border-white/15 bg-white/[0.04] opacity-90 hover:opacity-100 hover:bg-white/[0.06]" : "border-white/15 bg-white/[0.06] hover:bg-white/[0.08]"
+                            }`}
+                          >
+                            {isStandardAsset && (
+                              <span className="absolute top-2 right-2 rounded px-1.5 py-0.5 text-[10px] font-medium bg-[#F28C28]/30 text-[#F28C28]">Standard</span>
+                            )}
+                            <span className={`relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white overflow-hidden ${ASSET_COLORS[id] ?? "bg-white/20"}`}>
+                              {!logoFailedBuilder && TOKEN_LOGOS[id] ? (
+                                <img src={TOKEN_LOGOS[id]} alt="" className="h-full w-full object-cover" onError={() => setTokenLogoFailed((s) => new Set(s).add(id))} />
+                              ) : null}
+                              <span className={logoFailedBuilder || !TOKEN_LOGOS[id] ? "absolute inset-0 flex items-center justify-center" : "sr-only"}>{id}</span>
+                            </span>
+                            <span className="text-sm font-medium text-white">{a?.name ?? id}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : (
+                <>
                 {editingPlanId ? (() => {
                   const editingPlan = savedPlans.find((p) => p.id === editingPlanId);
                   return editingPlan ? (
@@ -2792,7 +2952,7 @@ export default function Home() {
                     <div className="mt-8 flex flex-col sm:flex-row gap-2">
                       {editingPlanId ? (
                         <>
-                          <button type="button" onClick={() => setShowUpdateConfirmModal(true)} className="flex-1 rounded-lg bg-[#F28C28] py-3 text-sm font-medium text-white shadow transition-all duration-200 hover:bg-[#d97a22] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
+                          <button type="button" onClick={() => setShowUpdateConfirmModal(true)} className="flex-1 rounded-lg bg-[#F28C28] py-3 text-sm font-medium text-white shadow transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
                             Save Changes
                           </button>
                           <button type="button" onClick={() => { setEditingPlanId(null); setStrategyNameInput(""); setDashboardTab("savedPlan"); }} className="flex-1 rounded-lg border border-white/20 py-3 text-sm font-medium text-white/90 hover:bg-white/5 focus:outline-none focus:ring-2 focus:ring-white/20 focus:ring-offset-2 focus:ring-offset-[#061826]">
@@ -2800,7 +2960,7 @@ export default function Home() {
                           </button>
                         </>
                       ) : canSaveAndActivate ? (
-                        <button type="button" onClick={() => setShowSaveStrategyModal(true)} className="w-full rounded-lg bg-[#F28C28] py-3 text-sm font-medium text-white shadow transition-all duration-200 hover:bg-[#d97a22] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
+                        <button type="button" onClick={() => setShowSaveStrategyModal(true)} className="w-full rounded-lg bg-[#F28C28] py-3 text-sm font-medium text-white shadow transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
                           Save Strategy
                         </button>
                       ) : (
@@ -2808,15 +2968,14 @@ export default function Home() {
                           type="button"
                           onClick={() => {
                             persistDraftFromCurrentState();
-                            if (!isLoggedIn) {
-                              setSaveGateModal("trial");
-                            } else {
-                              setUpgradeModalOpen(true);
-                            }
+                            if (!isLoggedIn) { setAuthModal("register"); return; }
+                            if (planTier === "free" && !userState.emailVerified) { setAuthModal("register-verify"); return; }
+                            if (planTier === "free" && userState.trialUsed) { setManagePlanOpen(true); return; }
+                            setTrialConfirmOpen(true);
                           }}
-                          className="w-full rounded-lg bg-[#F28C28] py-3 text-sm font-medium text-white shadow transition-all duration-200 hover:bg-[#d97a22] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]"
+                          className="w-full rounded-lg bg-[#F28C28] py-3 text-sm font-medium text-white shadow transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]"
                         >
-                          {isLoggedIn ? "Upgrade to Standard to save" : "Start free trial to save"}
+                          {!isLoggedIn ? "Create account to save" : planTier === "free" && !userState.emailVerified ? "Please verify your email to start your free trial" : planTier === "free" && userState.trialUsed ? "Upgrade to Standard to save strategies" : "Start your 7-day free trial to save strategies"}
                         </button>
                       )}
                     </div>
@@ -2827,62 +2986,75 @@ export default function Home() {
                 })() : (
                   <div className="rounded-xl border border-white/10 bg-white/[0.06] px-6 py-12 text-center">
                     <p className="text-sm text-white/80 mb-2">Build a strategy step by step.</p>
-                    <button type="button" onClick={openWizard} className="rounded-lg bg-[#F28C28] px-6 py-3 text-sm font-medium text-white hover:bg-[#d97a22] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
+                    <button type="button" onClick={openWizard} className="rounded-lg bg-[#F28C28] px-6 py-3 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
                       Create Strategy
                     </button>
                   </div>
                 )}
+                </>
+                ) }
               </div>
             )}
 
             {/* My Strategies tab — accordion, level-based deployment */}
             {dashboardTab === "savedPlan" && (
               <div className="px-6 py-5 md:px-8 md:py-6 space-y-3">
-                {strategiesLocked && savedPlans.length > 0 && (
-                  <div className="rounded-xl border border-white/10 bg-white/[0.06] px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
-                    <span className="text-sm text-white/80 flex items-center gap-2">
-                      <span className="text-white/60" aria-hidden>🔒</span>
-                      Your strategies are locked. Upgrade to Standard to edit and activate.
-                    </span>
-                    <button type="button" onClick={() => setUpgradeModalOpen(true)} className="rounded-lg bg-[#F28C28] px-4 py-2 text-sm font-medium text-white hover:bg-[#d97a22] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
-                      Upgrade to Standard
+                {!isLoggedIn ? (
+                  <div className="rounded-xl border border-white/10 bg-white/[0.06] px-6 py-14 text-center">
+                    <p className="text-base font-semibold text-white">Log in to view your saved strategies</p>
+                    <button type="button" onClick={() => setAuthModal("login")} className="mt-6 rounded-lg bg-[#F28C28] px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0a1f35]">
+                      Log in
                     </button>
                   </div>
-                )}
-                {savedPlans.length === 0 ? (
+                ) : savedPlans.length === 0 ? (
                   <div className="rounded-xl border border-white/10 bg-white/[0.06] px-6 py-14 text-center">
                     <p className="text-base font-semibold text-white">No strategies yet</p>
                     <p className="mt-2 text-sm text-white/60 max-w-sm mx-auto">
-                      {canSaveAndActivate ? "Create your first strategy with the step-by-step wizard." : strategiesLocked ? "Saving strategies requires Standard. Upgrade to save and manage strategies." : "Use the Create Strategy wizard to design a strategy. Start your free trial to save and activate it."}
+                      {canSaveAndActivate ? "Create your first strategy with the Strategy Builder." : strategiesLocked ? "Upgrade to Standard to save and manage strategies." : "Start your free trial to save strategies."}
                     </p>
                     <div className="mt-6 flex flex-col sm:flex-row items-center justify-center gap-3">
                       <button
                         type="button"
-                        onClick={() => { openWizard(); dashboardSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }}
-                        className="rounded-lg bg-[#F28C28] px-5 py-2.5 text-sm font-medium text-white hover:bg-[#d97a22] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0a1f35]"
+                        onClick={() => { setDashboardTab("manualPlanner"); setBuilderAsset(null); dashboardSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }}
+                        className="rounded-lg bg-[#F28C28] px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0a1f35]"
                       >
                         Create Strategy
                       </button>
                       {!canSaveAndActivate && (
                         <button
                           type="button"
-                          onClick={() => {
-                            persistDraftFromCurrentState();
-                            if (!isLoggedIn) {
-                              setSaveGateModal("trial");
-                            } else {
-                              setUpgradeModalOpen(true);
-                            }
-                          }}
+                          onClick={() => { if (planTier === "free" && !userState.trialUsed && userState.emailVerified) setTrialConfirmOpen(true); else if (planTier === "free" && userState.trialUsed) setManagePlanOpen(true); else setAuthModal("register"); }}
                           className="rounded-lg bg-white/10 px-5 py-2.5 text-sm font-medium text-white border border-white/20 hover:bg-white/15 focus:outline-none focus:ring-2 focus:ring-white/20 focus:ring-offset-2 focus:ring-offset-[#0a1f35]"
                         >
-                          {isLoggedIn ? "Upgrade to save strategies" : "Log in to save"}
+                          {planTier === "free" && !userState.trialUsed ? "Start free trial" : "Upgrade to Standard"}
                         </button>
                       )}
                     </div>
                   </div>
                 ) : (
-                  savedPlans.map((plan) => {
+                  <div className="relative">
+                    {strategiesLocked && (
+                      <div className="absolute inset-0 z-10 flex flex-col items-center justify-center rounded-xl bg-black/50 backdrop-blur-sm">
+                        <p className="text-sm font-medium text-white/90 text-center px-4">Your trial has ended. Upgrade to Standard to access your strategies.</p>
+                        <button type="button" onClick={() => setManagePlanOpen(true)} className="mt-4 rounded-lg bg-[#F28C28] px-4 py-2 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
+                          Upgrade to Standard
+                        </button>
+                      </div>
+                    )}
+                  {(() => {
+                    const byAsset = new Map<string, SavedStrategy[]>();
+                    savedPlans.forEach((p) => {
+                      const aid = p.asset_id ?? "BTC";
+                      if (!byAsset.has(aid)) byAsset.set(aid, []);
+                      byAsset.get(aid)!.push(p);
+                    });
+                    const assetOrder = ASSET_ORDER.filter((id) => byAsset.has(id));
+                    return assetOrder.flatMap((assetId) => {
+                      const plans = byAsset.get(assetId)!;
+                      return [
+                        <div key={`group-${assetId}`} className="space-y-3">
+                          {assetId !== assetOrder[0] && <div className="pt-2 border-t border-white/10" />}
+                          {plans.map((plan) => {
                     const isAccumulate = plan.mode === "accumulate";
                     const { minR: activeMinR, maxR: activeMaxR } = getActiveRiskBounds(plan);
                     const inActiveRange = riskValue >= activeMinR && riskValue <= activeMaxR;
@@ -2944,7 +3116,7 @@ export default function Home() {
                           <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#061826]/80 rounded-xl">
                             <div className="flex flex-col items-center gap-3">
                               <span className="text-2xl text-white/70" aria-hidden>🔒</span>
-                              <button type="button" onClick={() => setUpgradeModalOpen(true)} className="rounded-lg bg-[#F28C28] px-4 py-2 text-sm font-medium text-white hover:bg-[#d97a22] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
+                              <button type="button" onClick={() => setUpgradeModalOpen(true)} className="rounded-lg bg-[#F28C28] px-4 py-2 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
                                 Upgrade to Standard
                               </button>
                             </div>
@@ -2959,6 +3131,18 @@ export default function Home() {
                           disabled={strategiesLocked}
                         >
                           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
+                            {(() => {
+                              const aid = plan.asset_id ?? "BTC";
+                              const planLogoFailed = tokenLogoFailed.has(aid);
+                              return (
+                                <span className={`relative flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white overflow-hidden ${ASSET_COLORS[aid] ?? "bg-white/20"}`} title={aid} aria-hidden>
+                                  {!planLogoFailed && TOKEN_LOGOS[aid] ? (
+                                    <img src={TOKEN_LOGOS[aid]} alt="" className="h-full w-full object-cover" onError={() => setTokenLogoFailed((s) => new Set(s).add(aid))} />
+                                  ) : null}
+                                  <span className={planLogoFailed || !TOKEN_LOGOS[aid] ? "absolute inset-0 flex items-center justify-center" : "sr-only"}>{aid}</span>
+                                </span>
+                              );
+                            })()}
                             <span className="font-semibold text-white truncate">{plan.name}</span>
                             <span className="text-[11px] text-white/55 shrink-0">{strategyTypeLabel}</span>
                             <span className="shrink-0 text-[11px] text-white/70 tabular-nums">Active range <span style={{ color: getRiskColor(activeMinR) }}>{activeMinR}</span> → <span style={{ color: getRiskColor(activeMaxR) }}>{activeMaxR}</span></span>
@@ -3193,20 +3377,25 @@ export default function Home() {
                         </div>
                       </div>
                     );
-                  })
+                          })}
+                        </div>
+                      ];
+                    });
+                  })()
+                }
+                  </div>
                 )}
               </div>
             )}
 
-            {/* Simulator (Pro) — locked for free/expired; placeholder content for trial */}
-            {dashboardTab === "backtest" && (
-              <div className="flex flex-col items-center justify-center px-6 py-16 text-center md:px-8">
+            {false && (
+              <div className="flex flex-col items-center justify-center px-6 py-16 text-center md:px-8 hidden">
                 {!canAccessSimulatorPro ? (
                   <>
                     <span className="mb-3 text-3xl text-white/40" aria-hidden>🔒</span>
                     <p className="text-sm font-medium text-white/80">Simulator (Pro)</p>
                     <p className="mt-2 text-xs text-white/55 max-w-sm">Start your free 7-day trial to unlock historical simulation and advanced strategy testing.</p>
-                    <button type="button" onClick={() => setAuthModal("register")} className="mt-5 rounded-lg bg-[#F28C28] px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[#d97a22] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
+                    <button type="button" onClick={() => setAuthModal("register")} className="mt-5 rounded-lg bg-[#F28C28] px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
                       Upgrade to Standard
                     </button>
                   </>
@@ -3219,6 +3408,7 @@ export default function Home() {
                 )}
               </div>
             )}
+
           </div>
         </div>
       </section>
