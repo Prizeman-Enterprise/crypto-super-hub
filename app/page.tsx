@@ -912,7 +912,7 @@ export default function Home() {
   };
 
   /** Save a restored draft as a new strategy (after login/register). Uses draft data only. */
-  const saveDraftAsStrategy = (draft: StrategyDraft) => {
+  const saveDraftAsStrategy = (draft: StrategyDraft, assetId: string = builderAsset ?? selectedAsset ?? "BTC") => {
     const name = draft.strategyNameInput.trim() || "My strategy";
     const amount = draft.dcaMode === "accumulate" ? draft.investPerInterval : draft.sellPerInterval;
     const now = new Date().toISOString();
@@ -954,6 +954,7 @@ export default function Home() {
     const newPlan: SavedStrategy = {
       id: `plan-${Date.now()}`,
       name,
+      asset_id: assetId,
       mode: draft.dcaMode,
       strategyType: draft.strategyType,
       type: draft.strategyType === "fixed" ? "fixed" : "scaled",
@@ -1448,11 +1449,12 @@ export default function Home() {
                     message: supportMessage.trim(),
                     createdAt: new Date().toISOString(),
                   };
-                  await fetch("/api/support", {
+                  const res = await fetch("/api/support", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify(payload),
                   });
+                  if (!res.ok) throw new Error(`Support API returned ${res.status}`);
                   setSupportSuccess(true);
                   setSupportMessage("");
                 } catch {
