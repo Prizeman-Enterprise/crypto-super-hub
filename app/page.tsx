@@ -236,9 +236,9 @@ function clearDraft(): void {
   }
 }
 
-const RISK_BAND_ROW_HEIGHT = 36;
-/** Risk levels for band table: spec list + log interpolation. */
-const RISK_BAND_LEVELS = [0, 2.5, 5, 7.5, 10, 12.5, 15, 17.5, 20, 22.5, 25, 27.5, 30, 32.5, 35, 37.5, 40, 42.5, 45, 47.5, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100];
+const RISK_BAND_ROW_HEIGHT = 28;
+/** Risk levels for band table: whole numbers 0–100; price interpolated from risk band data. */
+const RISK_BAND_LEVELS = Array.from({ length: 101 }, (_, i) => i);
 const RISK_BAND_VISIBLE_EXTRA = 2;
 
 function formatRiskValue(r: number): string {
@@ -307,7 +307,20 @@ export default function Home() {
   const [allAssets, setAllAssets] = useState<Record<string, AssetData>>({});
   const [riskUpdatedAt, setRiskUpdatedAt] = useState<string | null>(null);
 
-  const [currency, setCurrency] = useState<"USD" | "AUD">("USD");
+  const [currency, setCurrency] = useState<"USD" | "AUD">(() => {
+    if (typeof window === "undefined") return "USD";
+    try {
+      const s = localStorage.getItem("csh-currency");
+      if (s === "USD" || s === "AUD") return s;
+    } catch { /* ignore */ }
+    return "USD";
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem("csh-currency", currency);
+    } catch { /* ignore */ }
+  }, [currency]);
   const [dashboardTab, setDashboardTab] = useState<"riskIndex" | "manualPlanner" | "savedPlan">("riskIndex");
   const [riskBandOpen, setRiskBandOpen] = useState(false);
   const [simulatedRisk, setSimulatedRisk] = useState(50);
@@ -326,6 +339,7 @@ export default function Home() {
   const [mounted, setMounted] = useState(false);
   /** Developer override for plan tier (Settings). Set to non-null to test gating. */
   const [devPlanTierOverride, setDevPlanTierOverride] = useState<PlanTier | null>(null);
+  const [devMode, setDevMode] = useState(false);
   useEffect(() => {
     setMounted(true);
     setUser(getAuthState());
@@ -381,11 +395,9 @@ export default function Home() {
     return Math.round(base * factor);
   };
 
-  function getRiskBadgeClass(score: number): string {
-    if (score <= 25) return "bg-emerald-500/25 text-emerald-200";
-    if (score <= 50) return "bg-amber-500/25 text-amber-200";
-    if (score <= 75) return "bg-orange-500/25 text-orange-200";
-    return "bg-red-500/25 text-red-200";
+  /** Risk badge uses 0–100 color scale from riskColors (green → neutral → red). */
+  function getRiskBadgeStyle(score: number): React.CSSProperties {
+    return { color: getRiskColor(score), backgroundColor: getRiskBgRgba(score, 0.28), border: `1px solid ${getRiskColor(score)}` };
   }
 
   const userState = getUserState(mounted ? user : null, devPlanTierOverride);
@@ -396,6 +408,21 @@ export default function Home() {
   const strategiesLocked = planTier === "free" && userState.trialUsed;
   const isStandard = planTier === "standard";
   const canAccessSimulatorPro = planTier === "standard";
+
+  /** Dev mode: Ctrl+Shift+D / Cmd+Shift+D toggles; when on, all assets/features unlocked. */
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "D") {
+        e.preventDefault();
+        setDevMode((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+  const effectiveIsStandard = devMode || isStandard;
+  const effectiveCanSaveAndActivate = devMode || canSaveAndActivate;
+  const effectiveStrategiesLocked = devMode ? false : strategiesLocked;
   const [authModal, setAuthModal] = useState<"login" | "register" | "register-verify" | "forgot" | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
   const [forgotSuccess, setForgotSuccess] = useState(false);
@@ -586,11 +613,11 @@ export default function Home() {
           if (p.mode === "distribute") {
             const sold = (p.executions ?? []).reduce((s, e) => s + e.btcAmount, 0);
             const remaining = Math.max(0, (p.btcHoldings ?? 0) - sold);
-            const price = getMockBtcPriceForRisk(riskValue);
+            const price = getPriceAtRisk(p.asset_id ?? "BTC", riskValue);
             const btcNeeded = price > 0 ? p.amountPerPurchase / price : 0;
             if (btcNeeded > remaining) return p;
           }
-          const price = getMockBtcPriceForRisk(riskValue);
+          const price = getPriceAtRisk(p.asset_id ?? "BTC", riskValue);
           const btcAmount = price > 0 ? p.amountPerPurchase / price : 0;
           const newEx: MockExecution = {
             id: `exec-${now}-${p.id}`,
@@ -638,7 +665,7 @@ export default function Home() {
         const newExecutions: MockExecution[] = [];
         for (const level of crossedNotExecuted) {
           const amountFiat = getAmountAtRisk(p, level);
-          const price = getMockBtcPriceForRisk(level);
+          const price = getPriceAtRisk(p.asset_id ?? "BTC", level);
           const btcAmount = price > 0 ? amountFiat / price : 0;
           if (p.mode === "distribute") {
             const soldSoFar = (p.executions ?? []).reduce((s, e) => s + e.btcAmount, 0) + newExecutions.reduce((s, e) => s + e.btcAmount, 0);
@@ -703,7 +730,8 @@ export default function Home() {
     return () => observer.disconnect();
   }, []);
 
-  const btcPriceAtRisk = getMockBtcPriceForRisk(simulatedRisk);
+  const builderAssetId = builderAsset ?? "BTC";
+  const btcPriceAtRisk = getPriceAtRisk(builderAssetId, simulatedRisk);
   const btcPrice = currency === "AUD" ? btcPriceAtRisk * USD_TO_AUD : btcPriceAtRisk;
   const symbol = currency === "AUD" ? "A$" : "$";
   const inRangeBuilder = simulatedRisk >= builderMinR && simulatedRisk <= builderMaxR;
@@ -717,7 +745,7 @@ export default function Home() {
   const estimatedFiatDisplay = currency === "AUD" ? estimatedFiatFromDistribute * USD_TO_AUD : estimatedFiatFromDistribute;
 
   const currentRiskForPlanner = riskValue;
-  const btcPriceForPlanner = getMockBtcPriceForRisk(currentRiskForPlanner);
+  const btcPriceForPlanner = getPriceAtRisk(builderAssetId, currentRiskForPlanner);
   const modeForCalc = dcaMode ?? "accumulate";
   const inRangePlanner = currentRiskForPlanner >= builderMinR && currentRiskForPlanner <= builderMaxR;
   const strategyActivePlanner = inRangePlanner;
@@ -783,7 +811,7 @@ export default function Home() {
       }
     }
     if (inActiveRange && isBuyFixed) {
-      const price = getMockBtcPriceForRisk(currentRiskForPlanner);
+      const price = getPriceAtRisk(builderAsset ?? "BTC", currentRiskForPlanner);
       const btcAmount = price > 0 ? amount / price : 0;
       initialExecutions.push({
         id: `exec-${Date.now()}`,
@@ -795,7 +823,7 @@ export default function Home() {
       });
     }
     if (inActiveRange && isSellFixed) {
-      const price = getMockBtcPriceForRisk(currentRiskForPlanner);
+      const price = getPriceAtRisk(builderAsset ?? "BTC", currentRiskForPlanner);
       const btcAmount = price > 0 ? amount / price : 0;
       initialExecutions.push({
         id: `exec-${Date.now()}`,
@@ -942,12 +970,12 @@ export default function Home() {
       }
     }
     if (inActiveRange && isBuyFixed) {
-      const price = getMockBtcPriceForRisk(riskValue);
+      const price = getPriceAtRisk(assetId, riskValue);
       const btcAmount = price > 0 ? amount / price : 0;
       initialExecutions.push({ id: `exec-${Date.now()}`, date: now.slice(0, 10), riskAtExecution: riskValue, amountFiat: amount, btcAmount, pricePerBtc: price });
     }
     if (inActiveRange && isSellFixed) {
-      const price = getMockBtcPriceForRisk(riskValue);
+      const price = getPriceAtRisk(assetId, riskValue);
       const btcAmount = price > 0 ? amount / price : 0;
       initialExecutions.push({ id: `exec-${Date.now()}`, date: now.slice(0, 10), riskAtExecution: riskValue, amountFiat: amount, btcAmount, pricePerBtc: price });
     }
@@ -1321,8 +1349,8 @@ export default function Home() {
             <h3 id="save-strategy-title" className="text-sm font-semibold text-white">Name Your Strategy</h3>
             <input type="text" value={strategyNameInput} onChange={(e) => setStrategyNameInput(e.target.value)} placeholder="e.g. Accumulation 30–0" className="mt-4 w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white placeholder-white/40 focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" aria-label="Strategy name" />
             <div className="mt-6 flex gap-2">
-              <button type="button" onClick={() => { setShowSaveStrategyModal(false); setStrategyNameInput(""); }} className="flex-1 rounded-lg border border-white/20 py-2 text-sm font-medium text-white/90 hover:bg-white/5" disabled={lockingIn}>Cancel</button>
-              <button type="button" onClick={() => { setLockingIn(true); setTimeout(() => { handleSaveStrategy(); setLockingIn(false); }, 400); }} className={`flex-1 rounded-lg py-2 text-sm font-medium text-white transition-all duration-200 ease ${lockingIn ? "bg-[#F28C28] scale-[1.01]" : "bg-[#F28C28] hover:bg-white hover:text-[#F28C28]"}`} disabled={lockingIn || !hasValidRange}>
+              <button type="button" onClick={() => { setShowSaveStrategyModal(false); setStrategyNameInput(""); }} className="flex-1 rounded-lg border border-white/20 py-2 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent disabled:opacity-60" disabled={lockingIn}>Cancel</button>
+              <button type="button" onClick={() => { setLockingIn(true); setTimeout(() => { handleSaveStrategy(); setLockingIn(false); }, 400); }} className={`flex-1 rounded-lg py-2 text-sm font-medium text-white transition-all duration-200 ${lockingIn ? "bg-[#F28C28] scale-105" : "bg-[#F28C28] hover:bg-[#F5A623] hover:scale-105"}`} disabled={lockingIn || !hasValidRange}>
                 {lockingIn ? "Saving…" : "Confirm Strategy"}
               </button>
             </div>
@@ -1339,8 +1367,8 @@ export default function Home() {
               <li>Updated rules apply from this point forward.</li>
             </ul>
             <div className="mt-6 flex gap-2">
-              <button type="button" onClick={() => setShowUpdateConfirmModal(false)} className="flex-1 rounded-lg border border-white/20 py-2 text-sm font-medium text-white/90 hover:bg-white/5">Cancel</button>
-              <button type="button" onClick={handleUpdateStrategy} className="flex-1 rounded-lg bg-[#F28C28] py-2 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0a1f35]">Confirm changes</button>
+              <button type="button" onClick={() => setShowUpdateConfirmModal(false)} className="flex-1 rounded-lg border border-white/20 py-2 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent">Cancel</button>
+              <button type="button" onClick={handleUpdateStrategy} className="flex-1 rounded-lg bg-[#F28C28] py-2 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F5A623] hover:scale-105 focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0a1f35]">Confirm changes</button>
             </div>
           </div>
         </div>
@@ -1351,8 +1379,8 @@ export default function Home() {
             <h3 id="delete-strategy-title" className="text-sm font-semibold text-white">Delete strategy?</h3>
             <p className="mt-3 text-sm text-white/80">This will permanently remove this strategy and its execution history.</p>
             <div className="mt-6 flex gap-2">
-              <button type="button" onClick={() => setDeleteConfirmPlanId(null)} className="flex-1 rounded-lg border border-white/20 py-2 text-sm font-medium text-white/90 hover:bg-white/5">Cancel</button>
-              <button type="button" onClick={() => { deletePlan(deleteConfirmPlanId); setDeleteConfirmPlanId(null); }} className="flex-1 rounded-lg bg-red-600 py-2 text-sm font-medium text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 focus:ring-offset-[#0a1f35]">Delete</button>
+              <button type="button" onClick={() => setDeleteConfirmPlanId(null)} className="flex-1 rounded-lg border border-white/20 py-2 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent">Cancel</button>
+              <button type="button" onClick={() => { deletePlan(deleteConfirmPlanId); setDeleteConfirmPlanId(null); }} className="flex-1 rounded-lg border border-red-400/60 py-2 text-sm font-medium text-red-300 transition-all duration-200 hover:bg-red-500/25 hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 focus:ring-offset-[#0a1f35]">Delete</button>
             </div>
           </div>
         </div>
@@ -1364,7 +1392,7 @@ export default function Home() {
             <h2 id="trial-confirm-title" className="text-sm font-semibold text-white">Start your 7-day free trial?</h2>
             <p className="mt-2 text-sm text-white/80">You&apos;ll be able to save and manage BTC strategies for 7 days. No credit card required. You can only activate this trial once.</p>
             <div className="mt-6 flex gap-2">
-              <button type="button" onClick={() => setTrialConfirmOpen(false)} className="flex-1 rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white/90 hover:bg-white/5">Cancel</button>
+              <button type="button" onClick={() => setTrialConfirmOpen(false)} className="flex-1 rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent">Cancel</button>
               <button
                 type="button"
                 onClick={() => {
@@ -1382,7 +1410,7 @@ export default function Home() {
                   const draft = loadDraftFromStorage();
                   if (draft) { applyDraftToState(draft); saveDraftAsStrategy(draft); setDashboardTab("savedPlan"); }
                 }}
-                className="flex-1 rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28]"
+                className="flex-1 rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F5A623] hover:scale-105"
               >
                 Start trial
               </button>
@@ -1402,7 +1430,7 @@ export default function Home() {
             <h2 id="upgrade-modal-title" className="text-sm font-semibold text-white">Upgrade to Standard</h2>
             <p className="mt-2 text-sm text-white/80">$19 AUD/month. Save, edit, and delete strategies. Payment integration coming soon.</p>
             <div className="mt-6 flex gap-2">
-              <button type="button" onClick={() => setUpgradeModalOpen(false)} className="flex-1 rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white/90 hover:bg-white/5">Cancel</button>
+              <button type="button" onClick={() => setUpgradeModalOpen(false)} className="flex-1 rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent">Cancel</button>
               <button
                 type="button"
                 onClick={() => {
@@ -1417,7 +1445,7 @@ export default function Home() {
                   );
                   setUpgradeModalOpen(false);
                 }}
-                className="flex-1 rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28]"
+                className="flex-1 rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F5A623] hover:scale-105"
               >
                 Confirm (mock)
               </button>
@@ -1480,14 +1508,14 @@ export default function Home() {
                     setSupportSuccess(false);
                     setSupportMessage("");
                   }}
-                  className="rounded-lg border border-white/20 px-3 py-2 text-xs font-medium text-white/80 hover:bg-white/5"
+                  className="rounded-lg border border-white/20 px-3 py-2 text-xs font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent"
                 >
                   Close
                 </button>
                 <button
                   type="submit"
                   disabled={supportSending || !supportMessage.trim()}
-                  className="rounded-lg bg-[#F28C28] px-4 py-2 text-xs font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] disabled:opacity-60"
+                  className="rounded-lg bg-[#F28C28] px-4 py-2 text-xs font-medium text-white transition-all duration-200 hover:bg-[#F5A623] hover:scale-105 disabled:opacity-60 disabled:hover:scale-100"
                 >
                   {supportSending ? "Sending…" : "Send message"}
                 </button>
@@ -1509,13 +1537,13 @@ export default function Home() {
                   {!userState.emailVerified ? (
                     <>
                       <p className="text-sm text-white/80">Please verify your email to start your free trial.</p>
-                      <button type="button" onClick={() => { setManagePlanOpen(false); setAuthModal("register-verify"); }} className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28]">Verify email</button>
+                      <button type="button" onClick={() => { setManagePlanOpen(false); setAuthModal("register-verify"); }} className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F5A623] hover:scale-105">Verify email</button>
                     </>
                   ) : (
                   <button
                     type="button"
                     onClick={() => { setTrialConfirmOpen(true); setManagePlanOpen(false); }}
-                    className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28]"
+                    className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F5A623] hover:scale-105"
                   >
                     Start 7-day free trial
                   </button>
@@ -1523,9 +1551,9 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={() => { setUpgradeComingSoonToast(true); setTimeout(() => setUpgradeComingSoonToast(false), 3000); }}
-                    className="w-full rounded-lg border border-white/25 py-2.5 text-sm font-medium text-white/90 hover:bg-white/5"
+                    className="w-full rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent"
                   >
-                    Upgrade to Standard — $9.99/month
+                    Upgrade to Standard — $19 AUD/month
                   </button>
                 </>
               )}
@@ -1534,9 +1562,9 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={() => { setUpgradeComingSoonToast(true); setTimeout(() => setUpgradeComingSoonToast(false), 3000); }}
-                    className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28]"
+                    className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F5A623] hover:scale-105"
                   >
-                    Upgrade to Standard — $9.99/month
+                    Upgrade to Standard — $19 AUD/month
                   </button>
                   <p className="text-[11px] text-white/50">Your free trial has been used.</p>
                 </>
@@ -1550,24 +1578,27 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={() => { setUpgradeComingSoonToast(true); setTimeout(() => setUpgradeComingSoonToast(false), 3000); }}
-                    className="w-full rounded-lg border border-white/25 py-2.5 text-sm font-medium text-white/90 hover:bg-white/5"
+                    className="w-full rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent"
                   >
-                    Upgrade to Standard — $9.99/month
+                    Upgrade to Standard — $19 AUD/month
                   </button>
                 </>
               )}
               {planTier === "standard" && (
                 <>
-                  <p className="text-sm text-white/80">Standard plan active</p>
-                  <button type="button" className="w-full rounded-lg border border-white/25 py-2.5 text-sm font-medium text-white/90 hover:bg-white/5">
+                  <p className="text-sm text-white/80">Standard plan active — $19 AUD/month</p>
+                  <button type="button" className="w-full rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent">
                     Manage billing
                   </button>
-                  <button type="button" className="w-full text-sm text-white/50 hover:text-white/70">Cancel subscription</button>
+                  <button type="button" className="w-full rounded-lg border border-red-400/60 py-2.5 text-sm font-medium text-red-300 transition-all duration-200 hover:bg-red-500/25 hover:border-red-400">
+                    Downgrade to Free
+                  </button>
+                  <p className="text-[11px] text-white/50">You’ll keep your account but lose Standard features (e.g. all assets, save strategies).</p>
                 </>
               )}
             </div>
 
-            <button type="button" onClick={() => setManagePlanOpen(false)} className="mt-6 w-full rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white/90 hover:bg-white/5">Close</button>
+            <button type="button" onClick={() => setManagePlanOpen(false)} className="mt-6 w-full rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent">Close</button>
           </div>
         </div>
       )}
@@ -1621,7 +1652,7 @@ export default function Home() {
               >
                 <input id="login-email" type="email" placeholder="Email" required className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/40 focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" autoComplete="email" />
                 <input id="login-password" type="password" placeholder="Password" required className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/40 focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" autoComplete="current-password" />
-                <button type="submit" disabled={authLoading} className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] disabled:opacity-70">{authLoading ? "Signing in…" : "Log in"}</button>
+                <button type="submit" disabled={authLoading} className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F5A623] hover:scale-105 disabled:opacity-70 disabled:hover:scale-100">{authLoading ? "Signing in…" : "Log in"}</button>
                 <div className="flex flex-col gap-1">
                   <button type="button" onClick={() => { setForgotSuccess(false); setAuthModal("forgot"); }} className="w-full text-left text-sm text-white/60 hover:text-white">Forgot password?</button>
                   <button type="button" onClick={() => setAuthModal("register")} className="w-full text-left text-sm text-white/60 hover:text-white">Create account</button>
@@ -1664,7 +1695,7 @@ export default function Home() {
                 <input id="reg-email" name="reg-email" type="email" placeholder="Email" required className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/40 focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" autoComplete="email" />
                 <input id="reg-password" name="reg-password" type="password" placeholder="Password" required className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/40 focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" autoComplete="new-password" />
                 <input id="reg-referral" name="reg-referral" type="text" placeholder="Referral code (optional)" className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/35 focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" />
-                <button type="submit" disabled={authLoading} className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] disabled:opacity-70">{authLoading ? "Creating account…" : "Create account"}</button>
+                <button type="submit" disabled={authLoading} className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F5A623] hover:scale-105 disabled:opacity-70 disabled:hover:scale-100">{authLoading ? "Creating account…" : "Create account"}</button>
                 <p className="text-[11px] text-white/50">7-day free trial after you verify your email. No card required.</p>
                 <button type="button" onClick={() => setAuthModal("login")} className="w-full text-left text-sm text-white/60 hover:text-white">Already have an account? Log in</button>
               </form>
@@ -1673,30 +1704,30 @@ export default function Home() {
               <div className="mt-4 space-y-4">
                 <p className="text-sm text-white/90">We&apos;ve sent a verification link to <span className="font-medium text-white">{user.email}</span>. Please check your inbox and click the link to activate your account.</p>
                 <div className="flex flex-col gap-2">
-                  <button type="button" className="w-full rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white/90 hover:bg-white/5">Resend email</button>
-                  <button type="button" onClick={() => setAuthModal("register")} className="w-full text-sm text-white/60 hover:text-white">Use a different email</button>
-                  {/* Dev bypass: replace with real email verification in production */}
-                  <button
-                    type="button"
-                    onClick={() => { setUser((u) => (u ? { ...u, email_verified: true } : null)); setAuthModal(null); const draft = loadDraftFromStorage(); if (draft) { applyDraftToState(draft); saveDraftAsStrategy(draft); setDashboardTab("savedPlan"); } }}
-                    className="mt-2 rounded-lg bg-white/10 py-2 text-xs font-medium text-white/70 hover:bg-white/15 border border-white/20"
-                  >
-                    Verify now (dev)
-                  </button>
+                  <button type="button" className="w-full rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent">Resend email</button>
+                  <button type="button" onClick={() => setAuthModal("register")} className="w-full rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent">Use a different email</button>
+                  {devMode && (
+                    <button
+                      type="button"
+                      onClick={() => { setUser((u) => (u ? { ...u, email_verified: true } : null)); setAuthModal(null); const draft = loadDraftFromStorage(); if (draft) { applyDraftToState(draft); saveDraftAsStrategy(draft); setDashboardTab("savedPlan"); } }}
+                      className="mt-2 rounded-lg bg-white/10 py-2 text-xs font-medium text-white/70 hover:bg-white/15 border border-white/20"
+                    >
+                      Verify now (dev)
+                    </button>
+                  )}
                 </div>
-                <button type="button" onClick={() => setAuthModal(null)} className="w-full text-sm text-white/50 hover:text-white">Close</button>
               </div>
             )}
             {authModal === "forgot" && (
               forgotSuccess ? (
                 <div className="mt-4 space-y-3">
                   <p className="text-sm text-white/90">If an account exists, we&apos;ve emailed a reset link.</p>
-                  <button type="button" onClick={() => { setForgotSuccess(false); setAuthModal("login"); }} className="w-full rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white/90 hover:bg-white/5">Back to log in</button>
+                  <button type="button" onClick={() => { setForgotSuccess(false); setAuthModal("login"); }} className="w-full rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent">Back to log in</button>
                 </div>
               ) : (
                 <form className="mt-4 space-y-3" onSubmit={(e) => { e.preventDefault(); setForgotSuccess(true); }}>
                   <input type="email" placeholder="Email" required className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/40 focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" autoComplete="email" />
-                  <button type="submit" className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28]">Send reset link</button>
+                  <button type="submit" className="w-full rounded-lg bg-[#F28C28] py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F5A623] hover:scale-105">Send reset link</button>
                   <button type="button" onClick={() => { setForgotSuccess(false); setAuthModal("login"); }} className="w-full text-sm text-white/60 hover:text-white">Back to log in</button>
                 </form>
               )
@@ -1718,7 +1749,7 @@ export default function Home() {
               </div>
               <div>
                 <p className="text-[11px] font-medium text-white/60 uppercase tracking-wider">Subscription</p>
-                <button type="button" onClick={() => { setSettingsOpen(false); setManagePlanOpen(true); }} className="mt-1 rounded-lg border border-white/20 px-3 py-1.5 text-xs font-medium text-white/80 hover:bg-white/5">Manage plan</button>
+                <button type="button" onClick={() => { setSettingsOpen(false); setManagePlanOpen(true); }} className="mt-1 rounded-lg border border-white/20 px-3 py-1.5 text-xs font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent">Manage plan</button>
               </div>
               <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
                 <p className="text-[11px] font-medium text-amber-200/80 uppercase tracking-wider">Developer</p>
@@ -1731,10 +1762,10 @@ export default function Home() {
                 </select>
               </div>
               <div className="pt-4 border-t border-white/10">
-                <button type="button" onClick={() => { if (typeof window !== "undefined" && window.confirm("Permanently delete your account and all data?")) { setUser(null); setSettingsOpen(false); } }} className="text-sm text-red-300/90 hover:text-red-300">Delete account</button>
+                <button type="button" onClick={() => { if (typeof window !== "undefined" && window.confirm("Permanently delete your account and all data?")) { setUser(null); setSettingsOpen(false); } }} className="rounded-lg border border-red-400/60 px-3 py-1.5 text-sm font-medium text-red-300 transition-all duration-200 hover:bg-red-500/25 hover:border-red-400">Delete account</button>
               </div>
             </div>
-            <button type="button" onClick={() => setSettingsOpen(false)} className="mt-6 w-full rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white/90 hover:bg-white/5">Close</button>
+            <button type="button" onClick={() => setSettingsOpen(false)} className="mt-6 w-full rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent">Close</button>
           </div>
         </div>
       )}
@@ -1931,7 +1962,8 @@ export default function Home() {
                 const builderPlan: SavedStrategy = { id: "", name: "", mode: dcaMode, strategyType: st, type: st === "fixed" ? "fixed" : "scaled", side: dcaMode === "accumulate" ? "buy" : "sell", triggerMode: st === "fixed" ? "schedule" : "risk-step", threshold: dcaMode === "accumulate" ? builderMaxR : builderMinR, activeRiskStart: Math.max(0, Math.min(100, startNum)), activeRiskEnd: Math.max(0, Math.min(100, endNum)), frequency, amountPerPurchase: dcaMode === "accumulate" ? investPerInterval : sellPerInterval, capital: dcaMode === "accumulate" ? capital : 0, btcHoldings: dcaMode === "distribute" ? btcHoldings : undefined, alertsEnabled: false, active: false, createdAt: "", status: "Waiting", dynamicStepInterval: (dcaMode === "distribute" || st === "dynamic") ? dynamicStepInterval : 5, dynamicMultiplierPct: st === "dynamic" ? dynamicMultiplierPct : 0 };
                 const summaryLevels = getStrategyLevels(builderPlan);
                 const totalCapitalRequired = dcaMode === "accumulate" ? summaryLevels.reduce((s, L) => s + getAmountAtRisk(builderPlan, L), 0) : summaryLevels.reduce((s, L) => s + getAmountAtRisk(builderPlan, L), 0);
-                const projectedBtc = dcaMode === "accumulate" ? summaryLevels.reduce((s, L) => s + getAmountAtRisk(builderPlan, L) / Math.max(1, getMockBtcPriceForRisk(L)), 0) : summaryLevels.reduce((s, L) => s + getAmountAtRisk(builderPlan, L) / Math.max(1, getMockBtcPriceForRisk(L)), 0);
+                const assetId = builderAsset ?? "BTC";
+                const projectedBtc = dcaMode === "accumulate" ? summaryLevels.reduce((s, L) => s + getAmountAtRisk(builderPlan, L) / Math.max(1, getPriceAtRisk(assetId, L)), 0) : summaryLevels.reduce((s, L) => s + getAmountAtRisk(builderPlan, L) / Math.max(1, getPriceAtRisk(assetId, L)), 0);
                 return (
                 <div>
                   <h3 className="text-sm font-medium text-white mb-3">Review your strategy</h3>
@@ -1950,7 +1982,7 @@ export default function Home() {
                     {dcaMode === "distribute" && <p className="text-white/90"><span className="text-white/55">Amount per order</span> {symbol}{sellPerInterval.toLocaleString()} {strategyType === "dynamic" ? "base, +" + dynamicMultiplierPct + "% per level" : "per execution"}</p>}
                     {strategyType === "fixed" && <p className="text-white/90"><span className="text-white/55">Execution frequency</span> {FREQUENCY_OPTIONS.find((o) => o.value === frequency)?.label ?? frequency}</p>}
                     {dcaMode === "accumulate" && <p className="text-white/90"><span className="text-white/55">Total budget</span> {symbol}{capital.toLocaleString()}</p>}
-                    {dcaMode === "distribute" && <p className="text-white/90"><span className="text-white/55">Total budget</span> {btcHoldings > 0 ? btcHoldings + " BTC" : "No cap"}</p>}
+                    {dcaMode === "distribute" && <p className="text-white/90"><span className="text-white/55">Total budget</span> {btcHoldings > 0 ? btcHoldings + " " + (builderAsset ?? "BTC") : "No cap"}</p>}
                     {strategyType === "dynamic" && summaryLevels.length > 0 && (
                       <div className="pt-2 border-t border-white/10">
                         <p className="text-white/55 mb-2">Projected deployment</p>
@@ -1973,7 +2005,7 @@ export default function Home() {
                           </table>
                         </div>
                         <p className="mt-2 text-white/80"><span className="text-white/55">Total capital required</span> {symbol}{Math.round(totalCapitalRequired).toLocaleString()}</p>
-                        <p className="text-[11px] text-white/70">Projected BTC (full plan) ~{projectedBtc.toFixed(4)} BTC</p>
+                        <p className="text-[11px] text-white/70">Projected {builderAsset ?? "BTC"} (full plan) ~{projectedBtc.toFixed(4)} {builderAsset ?? "BTC"}</p>
                       </div>
                     )}
                     {strategyType === "fixed" && dcaMode === "accumulate" && (
@@ -1986,7 +2018,7 @@ export default function Home() {
             </div>
             <div className="px-6 py-4 border-t border-white/10 flex gap-2 flex-wrap">
               {wizardStep > 1 ? (
-                <button type="button" onClick={() => setWizardStep((s) => Math.max(1, s - 1) as 1 | 2 | 3 | 4 | 5)} className="rounded-lg border border-white/20 py-2 px-4 text-sm font-medium text-white/90 hover:bg-white/5 focus:outline-none focus:ring-2 focus:ring-white/20">
+                <button type="button" onClick={() => setWizardStep((s) => Math.max(1, s - 1) as 1 | 2 | 3 | 4 | 5)} className="rounded-lg border border-white/20 py-2 px-4 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent focus:outline-none focus:ring-2 focus:ring-white/20">
                   Back
                 </button>
               ) : null}
@@ -1997,14 +2029,14 @@ export default function Home() {
                     type="button"
                     onClick={() => { if (wizardStep === 3 && wizardCanProceedStep3) setWizardStep(4); else if (wizardStep === 4) setWizardStep(5); }}
                     disabled={wizardStep === 3 && !wizardCanProceedStep3}
-                    className="rounded-lg bg-[#F28C28] py-2 px-4 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] disabled:opacity-50 disabled:pointer-events-none"
+                    className="rounded-lg bg-[#F28C28] py-2 px-4 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F5A623] hover:scale-105 focus:outline-none focus:ring-2 focus:ring-[#F28C28] disabled:opacity-50 disabled:pointer-events-none disabled:hover:scale-100"
                   >
                     Next
                   </button>
                 ) : null
               ) : (
                 <>
-                  {canSaveAndActivate ? (
+                  {effectiveCanSaveAndActivate ? (
                     <button
                       type="button"
                       onClick={() => {
@@ -2012,7 +2044,7 @@ export default function Home() {
                         setShowSaveStrategyModal(true);
                         setStrategyNameInput("");
                       }}
-                      className="rounded-lg bg-[#F28C28] py-2 px-4 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28]"
+                      className="rounded-lg bg-[#F28C28] py-2 px-4 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F5A623] hover:scale-105 focus:outline-none focus:ring-2 focus:ring-[#F28C28]"
                     >
                       Save Strategy
                     </button>
@@ -2026,7 +2058,7 @@ export default function Home() {
                         if (planTier === "free" && userState.trialUsed) { setManagePlanOpen(true); return; }
                         setTrialConfirmOpen(true);
                       }}
-                      className="rounded-lg bg-[#F28C28] py-2 px-4 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] inline-block text-center"
+                      className="rounded-lg bg-[#F28C28] py-2 px-4 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F5A623] hover:scale-105 focus:outline-none focus:ring-2 focus:ring-[#F28C28] inline-block text-center"
                     >
                       {!isLoggedIn ? "Create account to save" : planTier === "free" && !userState.emailVerified ? "Please verify your email to start your free trial" : planTier === "free" && userState.trialUsed ? "Upgrade to Standard to save strategies" : "Start your 7-day free trial to save strategies"}
                     </button>
@@ -2267,6 +2299,11 @@ export default function Home() {
           background: "radial-gradient(ellipse 100% 100% at 50% 50%, #102a43 0%, #0b1f33 55%, #081625 100%)",
         }}
       >
+        {devMode && (
+          <div className="fixed bottom-4 right-4 z-30 rounded-md bg-amber-500/90 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-black shadow-lg" aria-live="polite">
+            DEV MODE
+          </div>
+        )}
         <div className="pointer-events-none fixed inset-0 z-[1] opacity-[0.015]" style={{ backgroundImage: "url(\"data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E\")", backgroundRepeat: "repeat" }} aria-hidden />
         {/* Top navigation — Cowen-inspired */}
         <header className="relative z-20 flex items-center justify-between px-6 py-4 md:px-8">
@@ -2278,7 +2315,7 @@ export default function Home() {
             <button
               type="button"
               onClick={() => dashboardSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
-              className="rounded-lg bg-[#F28C28] px-4 py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0E2A47]"
+              className="rounded-lg border border-white/20 px-4 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0E2A47]"
             >
               Explore Framework
             </button>
@@ -2287,7 +2324,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => setProfileMenuOpen((open) => !open)}
-                  className="flex h-9 w-9 items-center justify-center rounded-full bg-[#F28C28] shadow-md shadow-black/40 ring-1 ring-white/20 transition-all duration-200 ease hover:bg-[rgba(255,255,255,0.1)] hover:ring-white/40 focus:outline-none focus:ring-2 focus:ring-white/70"
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-white/20 text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent focus:outline-none focus:ring-2 focus:ring-white/70"
                   aria-label="Account menu"
                   aria-haspopup="menu"
                   aria-expanded={profileMenuOpen}
@@ -2355,7 +2392,7 @@ export default function Home() {
                     </button>
                     <button
                       type="button"
-                      className="w-full px-3 py-2 text-left text-sm text-red-300/90 hover:bg-red-500/10"
+                      className="w-full rounded-lg border border-red-400/60 px-3 py-2 text-left text-sm font-medium text-red-300 transition-all duration-200 hover:bg-red-500/25 hover:border-red-400"
                       onClick={() => {
                         setProfileMenuOpen(false);
                         if (typeof window !== "undefined" && window.confirm("Permanently delete your account and all data?")) {
@@ -2373,7 +2410,7 @@ export default function Home() {
               <button
                 type="button"
                 onClick={() => setAuthModal("login")}
-                className="text-sm font-medium text-white/90 hover:text-white transition-colors focus:outline-none focus:ring-0"
+                className="rounded-lg border border-white/20 px-4 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0E2A47]"
               >
                 Log in
               </button>
@@ -2408,7 +2445,7 @@ export default function Home() {
               <button
                 type="button"
                 onClick={() => dashboardSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
-                className="rounded-lg bg-[#F28C28] px-6 py-3 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0E2A47]"
+                className="rounded-lg bg-[#F28C28] px-6 py-3 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F5A623] hover:scale-105 focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0E2A47]"
               >
                 Explore Framework
               </button>
@@ -2480,7 +2517,7 @@ export default function Home() {
                     if (!a) return null;
                     const score = typeof a.risk_score === "number" ? a.risk_score : 50;
                     const price = typeof a.price === "number" ? a.price : 0;
-                    const isLocked = !isStandard && id !== "BTC";
+                    const isLocked = !effectiveIsStandard && id !== "BTC";
                     const logoFailed = tokenLogoFailed.has(id);
                     return (
                       <div key={a.asset_id} className="relative">
@@ -2514,7 +2551,7 @@ export default function Home() {
                                 {formatPriceByAsset(a.asset_id, price, currency, USD_TO_AUD)}
                               </p>
                               <p className="text-sm tabular-nums text-white/50 shrink-0 w-10 text-center">—</p>
-                              <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold tabular-nums ${getRiskBadgeClass(score)}`}>
+                              <span className="shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold tabular-nums" style={getRiskBadgeStyle(score)}>
                                 {score % 1 === 0 ? score : score.toFixed(1)}
                               </span>
                             </>
@@ -2545,9 +2582,9 @@ export default function Home() {
                 </button>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 border-b border-white/10 pb-5">
                   <div className="min-w-0">
-                    <p className="text-[11px] uppercase tracking-wider text-white/50">{selectedAsset ?? "BTC"} Price</p>
+                    <p className="text-[11px] uppercase tracking-wider text-white/50">{selectedAsset ?? "BTC"} Price{simulatedRisk !== riskValue ? " (at risk " + simulatedRisk + ")" : ""}</p>
                     <p className="mt-1.5 text-lg font-bold tabular-nums text-white md:text-xl">
-                      {formatPriceByAsset(selectedAsset ?? "BTC", assetPriceUsd, currency, USD_TO_AUD)}
+                      {formatPriceByAsset(selectedAsset ?? "BTC", getPriceAtRisk(selectedAsset ?? "BTC", simulatedRisk), currency, USD_TO_AUD)}
                     </p>
                   </div>
                   <div className="min-w-0">
@@ -2676,7 +2713,7 @@ export default function Home() {
                       {ASSET_ORDER.map((id) => {
                         const a = allAssets[id];
                         const isStandardAsset = id !== "BTC";
-                        const isLockedBuilder = !isStandard && isStandardAsset;
+                        const isLockedBuilder = !effectiveIsStandard && isStandardAsset;
                         const logoFailedBuilder = tokenLogoFailed.has(id);
                         return (
                           <button
@@ -2688,7 +2725,7 @@ export default function Home() {
                               isLockedBuilder ? "cursor-not-allowed border-white/15 bg-white/[0.04] opacity-70" : isStandardAsset ? "border-white/15 bg-white/[0.04] opacity-90 hover:opacity-100 hover:bg-white/[0.06]" : "border-white/15 bg-white/[0.06] hover:bg-white/[0.08]"
                             }`}
                           >
-                            {isStandardAsset && (
+                            {!effectiveIsStandard && isStandardAsset && (
                               <span className="absolute top-2 right-2 rounded px-1.5 py-0.5 text-[10px] font-medium bg-[#F28C28]/30 text-[#F28C28]">Standard</span>
                             )}
                             <span className={`relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-sm font-semibold text-white overflow-hidden ${ASSET_COLORS[id] ?? "bg-white/20"}`}>
@@ -2877,7 +2914,7 @@ export default function Home() {
                             <p className="mt-1 text-sm text-white/80">Triggers orders as risk reaches each planned level within the active range.</p>
                           )}
                           {dcaMode === "accumulate" && btcPriceForPlanner > 0 && (
-                            <p className="mt-2 text-[11px] text-white/50">Est. BTC per buy (at current price): ~{(investPerInterval / btcPriceForPlanner).toFixed(4)} BTC</p>
+                            <p className="mt-2 text-[11px] text-white/50">Est. {builderAsset ?? "BTC"} per buy (at current price): ~{(investPerInterval / btcPriceForPlanner).toFixed(4)} {builderAsset ?? "BTC"}</p>
                           )}
                         </div>
                       </div>
@@ -2888,7 +2925,7 @@ export default function Home() {
                       if (dcaMode === "distribute") {
                         const totalBtcToDistribute = levels.reduce((sum, L) => {
                           const amtFiat = getAmountAtRisk(builderPlan, L);
-                          const priceAtL = getMockBtcPriceForRisk(L);
+                          const priceAtL = getPriceAtRisk(builderAsset ?? "BTC", L);
                           return sum + (priceAtL > 0 ? amtFiat / priceAtL : 0);
                         }, 0);
                         const totalProceedsFiat = levels.reduce((sum, L) => sum + getAmountAtRisk(builderPlan, L), 0);
@@ -2903,14 +2940,14 @@ export default function Home() {
                                   <thead className="border-b border-white/10 bg-white/5 sticky top-0">
                                     <tr>
                                       <th className="py-2 pr-3 font-medium text-white/70">Risk Level</th>
-                                      <th className="py-2 pr-3 font-medium text-white/70">BTC to Sell</th>
+                                      <th className="py-2 pr-3 font-medium text-white/70">Est. {builderAsset ?? "BTC"}</th>
                                       <th className="py-2 font-medium text-white/70">Est. Proceeds ({currency})</th>
                                     </tr>
                                   </thead>
                                   <tbody>
                                     {levels.map((risk) => {
                                       const amtFiat = getAmountAtRisk(builderPlan, risk);
-                                      const priceAtRisk = getMockBtcPriceForRisk(risk);
+                                      const priceAtRisk = getPriceAtRisk(builderAsset ?? "BTC", risk);
                                       const btcToSell = priceAtRisk > 0 ? amtFiat / priceAtRisk : 0;
                                       const estProceeds = currency === "AUD" ? amtFiat * USD_TO_AUD : amtFiat;
                                       return (
@@ -2925,7 +2962,7 @@ export default function Home() {
                                 </table>
                               </div>
                               <p className="mt-4 text-[11px] font-medium text-white/60">Summary</p>
-                              <p className="mt-0.5 text-sm text-white/90">Total BTC to distribute (max): ~{Math.min(totalBtcToDistribute, btcHoldings).toFixed(4)} BTC</p>
+                              <p className="mt-0.5 text-sm text-white/90">Total {builderAsset ?? "BTC"} to distribute (max): ~{Math.min(totalBtcToDistribute, btcHoldings).toFixed(4)} {builderAsset ?? "BTC"}</p>
                               <p className="mt-0.5 text-[11px] text-white/60">Est. total proceeds (at current price): {sym}{Math.round(totalProceedsDisplay).toLocaleString()} {currency}</p>
                             </div>
                           </div>
@@ -2945,7 +2982,7 @@ export default function Home() {
                             </div>
                             <p className="mt-4 text-[11px] font-medium text-white/60">Capital Summary</p>
                             <p className="mt-0.5 text-sm text-white/90">Total capital required (if fully executed): {symbol}{(amountPerTrigger * triggersAvailable).toLocaleString()}</p>
-                            <p className="mt-0.5 text-[11px] text-white/60">Projected BTC if fully executed: ~{(projectedBtc12Mo > 0 ? projectedBtc12Mo : (amountPerTrigger * triggersAvailable / Math.max(1, btcPriceForPlanner))).toFixed(4)} BTC</p>
+                            <p className="mt-0.5 text-[11px] text-white/60">Projected {builderAsset ?? "BTC"} if fully executed: ~{(projectedBtc12Mo > 0 ? projectedBtc12Mo : (amountPerTrigger * triggersAvailable / Math.max(1, btcPriceForPlanner))).toFixed(4)} {builderAsset ?? "BTC"}</p>
                           </div>
                         </div>
                       );
@@ -2954,15 +2991,15 @@ export default function Home() {
                     <div className="mt-8 flex flex-col sm:flex-row gap-2">
                       {editingPlanId ? (
                         <>
-                          <button type="button" onClick={() => setShowUpdateConfirmModal(true)} className="flex-1 rounded-lg bg-[#F28C28] py-3 text-sm font-medium text-white shadow transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
-                            Save Changes
-                          </button>
-                          <button type="button" onClick={() => { setEditingPlanId(null); setStrategyNameInput(""); setDashboardTab("savedPlan"); }} className="flex-1 rounded-lg border border-white/20 py-3 text-sm font-medium text-white/90 hover:bg-white/5 focus:outline-none focus:ring-2 focus:ring-white/20 focus:ring-offset-2 focus:ring-offset-[#061826]">
+<button type="button" onClick={() => setShowUpdateConfirmModal(true)} className="flex-1 rounded-lg bg-[#F28C28] py-3 text-sm font-medium text-white shadow transition-all duration-200 hover:bg-[#F5A623] hover:scale-105 focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
+                          Save Changes
+                        </button>
+                          <button type="button" onClick={() => { setEditingPlanId(null); setStrategyNameInput(""); setDashboardTab("savedPlan"); }} className="flex-1 rounded-lg border border-white/20 py-3 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent focus:outline-none focus:ring-2 focus:ring-white/20 focus:ring-offset-2 focus:ring-offset-[#061826]">
                             Cancel
                           </button>
                         </>
-                      ) : canSaveAndActivate ? (
-                        <button type="button" onClick={() => setShowSaveStrategyModal(true)} className="w-full rounded-lg bg-[#F28C28] py-3 text-sm font-medium text-white shadow transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
+                      ) : effectiveCanSaveAndActivate ? (
+                        <button type="button" onClick={() => setShowSaveStrategyModal(true)} className="w-full rounded-lg bg-[#F28C28] py-3 text-sm font-medium text-white shadow transition-all duration-200 hover:bg-[#F5A623] hover:scale-105 focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
                           Save Strategy
                         </button>
                       ) : (
@@ -2975,7 +3012,7 @@ export default function Home() {
                             if (planTier === "free" && userState.trialUsed) { setManagePlanOpen(true); return; }
                             setTrialConfirmOpen(true);
                           }}
-                          className="w-full rounded-lg bg-[#F28C28] py-3 text-sm font-medium text-white shadow transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]"
+                          className="w-full rounded-lg bg-[#F28C28] py-3 text-sm font-medium text-white shadow transition-all duration-200 hover:bg-[#F5A623] hover:scale-105 focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]"
                         >
                           {!isLoggedIn ? "Create account to save" : planTier === "free" && !userState.emailVerified ? "Please verify your email to start your free trial" : planTier === "free" && userState.trialUsed ? "Upgrade to Standard to save strategies" : "Start your 7-day free trial to save strategies"}
                         </button>
@@ -2988,7 +3025,7 @@ export default function Home() {
                 })() : (
                   <div className="rounded-xl border border-white/10 bg-white/[0.06] px-6 py-12 text-center">
                     <p className="text-sm text-white/80 mb-2">Build a strategy step by step.</p>
-                    <button type="button" onClick={openWizard} className="rounded-lg bg-[#F28C28] px-6 py-3 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
+                    <button type="button" onClick={openWizard} className="rounded-lg border border-white/20 px-6 py-3 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
                       Create Strategy
                     </button>
                   </div>
@@ -3004,7 +3041,7 @@ export default function Home() {
                 {!isLoggedIn ? (
                   <div className="rounded-xl border border-white/10 bg-white/[0.06] px-6 py-14 text-center">
                     <p className="text-base font-semibold text-white">Log in to view your saved strategies</p>
-                    <button type="button" onClick={() => setAuthModal("login")} className="mt-6 rounded-lg bg-[#F28C28] px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0a1f35]">
+                    <button type="button" onClick={() => setAuthModal("login")} className="mt-6 rounded-lg border border-white/20 px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0a1f35]">
                       Log in
                     </button>
                   </div>
@@ -3012,21 +3049,21 @@ export default function Home() {
                   <div className="rounded-xl border border-white/10 bg-white/[0.06] px-6 py-14 text-center">
                     <p className="text-base font-semibold text-white">No strategies yet</p>
                     <p className="mt-2 text-sm text-white/60 max-w-sm mx-auto">
-                      {canSaveAndActivate ? "Create your first strategy with the Strategy Builder." : strategiesLocked ? "Upgrade to Standard to save and manage strategies." : "Start your free trial to save strategies."}
+                      {effectiveCanSaveAndActivate ? "Create your first strategy with the Strategy Builder." : effectiveStrategiesLocked ? "Upgrade to Standard to save and manage strategies." : "Start your free trial to save strategies."}
                     </p>
                     <div className="mt-6 flex flex-col sm:flex-row items-center justify-center gap-3">
                       <button
                         type="button"
                         onClick={() => { setDashboardTab("manualPlanner"); setBuilderAsset(null); dashboardSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }}
-                        className="rounded-lg bg-[#F28C28] px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0a1f35]"
+                        className="rounded-lg border border-white/20 px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0a1f35]"
                       >
                         Create Strategy
                       </button>
-                      {!canSaveAndActivate && (
+                      {!effectiveCanSaveAndActivate && (
                         <button
                           type="button"
                           onClick={() => { if (planTier === "free" && !userState.trialUsed && userState.emailVerified) setTrialConfirmOpen(true); else if (planTier === "free" && userState.trialUsed) setManagePlanOpen(true); else setAuthModal("register"); }}
-                          className="rounded-lg bg-white/10 px-5 py-2.5 text-sm font-medium text-white border border-white/20 hover:bg-white/15 focus:outline-none focus:ring-2 focus:ring-white/20 focus:ring-offset-2 focus:ring-offset-[#0a1f35]"
+                          className="rounded-lg border border-white/20 px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent focus:outline-none focus:ring-2 focus:ring-white/20 focus:ring-offset-2 focus:ring-offset-[#0a1f35]"
                         >
                           {planTier === "free" && !userState.trialUsed ? "Start free trial" : "Upgrade to Standard"}
                         </button>
@@ -3035,10 +3072,10 @@ export default function Home() {
                   </div>
                 ) : (
                   <div className="relative">
-                    {strategiesLocked && (
+                    {effectiveStrategiesLocked && (
                       <div className="absolute inset-0 z-10 flex flex-col items-center justify-center rounded-xl bg-black/50 backdrop-blur-sm">
                         <p className="text-sm font-medium text-white/90 text-center px-4">Your trial has ended. Upgrade to Standard to access your strategies.</p>
-                        <button type="button" onClick={() => setManagePlanOpen(true)} className="mt-4 rounded-lg bg-[#F28C28] px-4 py-2 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
+                        <button type="button" onClick={() => setManagePlanOpen(true)} className="mt-4 rounded-lg border border-white/20 px-4 py-2 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
                           Upgrade to Standard
                         </button>
                       </div>
@@ -3089,7 +3126,8 @@ export default function Home() {
                     const nextPendingLevel = isAccumulate
                       ? levels.filter((L) => L <= riskValue && !displayCompletedLevels.has(L))[0] ?? levels[0]
                       : levels.filter((L) => L >= riskValue && !displayCompletedLevels.has(L))[0] ?? (levels[levels.length - 1] ?? activeMaxR);
-                    const currentBtcPrice = getMockBtcPriceForRisk(riskValue);
+                    const planAssetId = plan.asset_id ?? "BTC";
+                    const currentBtcPrice = getPriceAtRisk(planAssetId, riskValue);
                     const nextAmount = plan.strategyType === "dynamic" ? getAmountAtRiskFromPlan(plan, nextPendingLevel) : getAmountAtRiskFromPlan(plan, riskValue);
                     const nextBtcPreview = currentBtcPrice > 0 ? nextAmount / currentBtcPrice : 0;
                     const currentValue = totalBtc * currentBtcPrice;
@@ -3112,13 +3150,13 @@ export default function Home() {
                       <div
                         key={plan.id}
                         ref={plan.id === justSavedId ? savedCardRef : undefined}
-                        className={`rounded-xl border border-white/10 bg-white/[0.06] overflow-hidden transition-all duration-200 relative ${strategiesLocked ? "opacity-75" : ""} ${isJustSaved ? "saved-card-highlight ring-1 ring-[#F28C28]/20" : ""}`}
+                        className={`rounded-xl border border-white/10 bg-white/[0.06] overflow-hidden transition-all duration-200 relative ${effectiveStrategiesLocked ? "opacity-75" : ""} ${isJustSaved ? "saved-card-highlight ring-1 ring-[#F28C28]/20" : ""}`}
                       >
-                        {strategiesLocked && (
+                        {effectiveStrategiesLocked && (
                           <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#061826]/80 rounded-xl">
                             <div className="flex flex-col items-center gap-3">
                               <span className="text-2xl text-white/70" aria-hidden>🔒</span>
-                              <button type="button" onClick={() => setUpgradeModalOpen(true)} className="rounded-lg bg-[#F28C28] px-4 py-2 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
+                              <button type="button" onClick={() => setUpgradeModalOpen(true)} className="rounded-lg border border-white/20 px-4 py-2 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
                                 Upgrade to Standard
                               </button>
                             </div>
@@ -3127,10 +3165,10 @@ export default function Home() {
                         {/* Accordion header — Strategy Name · Mode · Zone · Status · Current Risk */}
                         <button
                           type="button"
-                          onClick={() => !strategiesLocked && setExpandedPlanId(isExpanded ? null : plan.id)}
+                          onClick={() => !effectiveStrategiesLocked && setExpandedPlanId(isExpanded ? null : plan.id)}
                           className="w-full cursor-pointer px-5 py-4 flex flex-wrap items-center justify-between gap-3 text-left transition-colors duration-150 hover:bg-white/[0.04] focus:outline-none focus-visible:outline-none focus-visible:ring-0 disabled:cursor-default"
                           aria-expanded={isExpanded}
-                          disabled={strategiesLocked}
+                          disabled={effectiveStrategiesLocked}
                         >
                           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
                             {(() => {
@@ -3148,7 +3186,7 @@ export default function Home() {
                             <span className="font-semibold text-white truncate">{plan.name}</span>
                             <span className="text-[11px] text-white/55 shrink-0">{strategyTypeLabel}</span>
                             <span className="shrink-0 text-[11px] text-white/70 tabular-nums">Active range <span style={{ color: getRiskColor(activeMinR) }}>{activeMinR}</span> → <span style={{ color: getRiskColor(activeMaxR) }}>{activeMaxR}</span></span>
-                            <span className={`text-[11px] font-medium shrink-0 ${!isAccumulate && btcRemaining <= 0 ? "text-white/60" : (inActiveRange && plan.active) ? "text-emerald-400/90" : "text-[#F28C28]/90"}`}>{!isAccumulate && btcRemaining <= 0 ? "Inactive — No BTC remaining" : statusLabel}</span>
+                            <span className={`text-[11px] font-medium shrink-0 ${!isAccumulate && btcRemaining <= 0 ? "text-white/60" : (inActiveRange && plan.active) ? "text-emerald-400/90" : "text-[#F28C28]/90"}`}>{!isAccumulate && btcRemaining <= 0 ? `Inactive — No ${planAssetId} remaining` : statusLabel}</span>
                           </div>
                           <span className="text-white/40 transition-transform duration-200 shrink-0" style={{ transform: isExpanded ? "rotate(180deg)" : "none" }}>▼</span>
                         </button>
@@ -3167,11 +3205,11 @@ export default function Home() {
                                     </button>
                                   </>
                                 );
-                                if (!isAccumulate && btcRemaining <= 0) return <NextActionCard header="Status" primaryLine="Inactive — No BTC remaining" alerts={alertsEl} elevated={false} />;
+                                if (!isAccumulate && btcRemaining <= 0) return <NextActionCard header="Status" primaryLine={`Inactive — No ${planAssetId} remaining`} alerts={alertsEl} elevated={false} />;
                                 if (!inActiveRange) return <NextActionCard header="Status" primaryLine="WAITING FOR ENTRY" alerts={alertsEl} elevated={false} />;
                                 if (allLevelsExecuted) return <NextActionCard header="Status" primaryLine="Strategy fully deployed" alerts={alertsEl} elevated={false} />;
-                                if (plan.strategyType === "dynamic") return <NextActionCard header="NEXT ACTION" primaryLine={<span>Risk <span style={{ color: getRiskColor(nextPendingLevel) }}>{nextPendingLevel}</span></span>} secondaryLine={isAccumulate ? <>Buy {sym}{nextAmount.toLocaleString()} → ~{nextBtcPreview.toFixed(4)} BTC</> : <>Sell ~{nextBtcPreview.toFixed(4)} BTC → {sym}{nextAmount.toLocaleString()}</>} alerts={alertsEl} elevated />;
-                                return <NextActionCard header="NEXT ACTION" primaryLine={<>{getFrequencyLabel(plan.frequency)} — Next in: {formatNextExecutionCountdown(plan.nextExecutionAt)}</>} secondaryLine={isAccumulate ? <>Buy {sym}{plan.amountPerPurchase.toLocaleString()} → ~{(plan.amountPerPurchase / Math.max(1, getMockBtcPriceForRisk(riskValue))).toFixed(4)} BTC</> : <>Sell ~{(plan.amountPerPurchase / Math.max(1, getMockBtcPriceForRisk(riskValue))).toFixed(4)} BTC → {sym}{plan.amountPerPurchase.toLocaleString()}</>} alerts={alertsEl} elevated />;
+                                if (plan.strategyType === "dynamic") return <NextActionCard header="NEXT ACTION" primaryLine={<span>Risk <span style={{ color: getRiskColor(nextPendingLevel) }}>{nextPendingLevel}</span></span>} secondaryLine={isAccumulate ? <>Buy {sym}{nextAmount.toLocaleString()} → ~{nextBtcPreview.toFixed(4)} {planAssetId}</> : <>Sell ~{nextBtcPreview.toFixed(4)} {planAssetId} → {sym}{nextAmount.toLocaleString()}</>} alerts={alertsEl} elevated />;
+                                return <NextActionCard header="NEXT ACTION" primaryLine={<>{getFrequencyLabel(plan.frequency)} — Next in: {formatNextExecutionCountdown(plan.nextExecutionAt)}</>} secondaryLine={isAccumulate ? <>Buy {sym}{plan.amountPerPurchase.toLocaleString()} → ~{(plan.amountPerPurchase / Math.max(1, getPriceAtRisk(planAssetId, riskValue))).toFixed(4)} {planAssetId}</> : <>Sell ~{(plan.amountPerPurchase / Math.max(1, getPriceAtRisk(planAssetId, riskValue))).toFixed(4)} {planAssetId} → {sym}{plan.amountPerPurchase.toLocaleString()}</>} alerts={alertsEl} elevated />;
                               })()}
 
                               {/* Compact Strategy Progress — horizontal; BUY vs SELL metrics differ */}
@@ -3181,7 +3219,7 @@ export default function Home() {
                                     {plan.strategyType === "fixed" ? (
                                       <>
                                         <div><p className="text-white/50">Capital Deployed</p><p className="tabular-nums font-medium text-white">{sym}{totalFiatDeployed.toLocaleString()}</p></div>
-                                        <div><p className="text-white/50">BTC Accumulated</p><p className="tabular-nums font-medium text-white">{totalBtc.toFixed(4)} BTC</p></div>
+                                        <div><p className="text-white/50">{planAssetId} Accumulated</p><p className="tabular-nums font-medium text-white">{totalBtc.toFixed(4)} {planAssetId}</p></div>
                                         <div><p className="text-white/50">Buy Amount</p><p className="tabular-nums font-medium text-white">{sym}{plan.amountPerPurchase.toLocaleString()}</p></div>
                                         {plan.frequency != null && (
                                           <div><p className="text-white/50">Frequency</p><p className="tabular-nums font-medium text-white">{plan.frequency === "daily" ? "Daily" : plan.frequency === "weekly" ? "Weekly" : plan.frequency === "fortnightly" ? "Fortnightly" : "Monthly"}</p></div>
@@ -3198,10 +3236,10 @@ export default function Home() {
                                           </div>
                                         </div>
                                         <div><p className="text-white/50">Capital Deployed</p><p className="tabular-nums font-medium text-white">{sym}{totalFiatDeployed.toLocaleString()}</p></div>
-                                        <div><p className="text-white/50">BTC Accumulated</p><p className="tabular-nums font-medium text-white">{totalBtc.toFixed(4)} BTC</p></div>
+                                        <div><p className="text-white/50">{planAssetId} Accumulated</p><p className="tabular-nums font-medium text-white">{totalBtc.toFixed(4)} {planAssetId}</p></div>
                                         <div><p className="text-white/50">Executions</p><p className="tabular-nums font-medium text-white">{displayCompletedLevels.size} / {levels.length}</p></div>
                                         <div><p className="text-white/50">Remaining Orders</p><p className="tabular-nums font-medium text-white">{remainingOrders}</p></div>
-                                        <div><p className="text-white/50">Projected BTC (Full Plan)</p><p className="tabular-nums text-white/90">~{(levels.reduce((sum, L) => sum + getAmountAtRiskFromPlan(plan, L) / Math.max(1, getMockBtcPriceForRisk(L)), 0)).toFixed(4)} BTC</p></div>
+                                        <div><p className="text-white/50">Projected {planAssetId} (Full Plan)</p><p className="tabular-nums text-white/90">~{(levels.reduce((sum, L) => sum + getAmountAtRiskFromPlan(plan, L) / Math.max(1, getPriceAtRisk(planAssetId, L)), 0)).toFixed(4)} {planAssetId}</p></div>
                                       </>
                                     )}
                                   </>
@@ -3209,12 +3247,12 @@ export default function Home() {
                                   <>
                                     {plan.strategyType === "fixed" ? (
                                       <>
-                                        <div><p className="text-white/50">BTC Distributed</p><p className="tabular-nums font-medium text-white">{totalBtcSold.toFixed(4)} BTC</p></div>
+                                        <div><p className="text-white/50">{planAssetId} Distributed</p><p className="tabular-nums font-medium text-white">{totalBtcSold.toFixed(4)} {planAssetId}</p></div>
                                         <div><p className="text-white/50">Cash Realised</p><p className="tabular-nums font-medium text-white">{sym}{Math.round(currency === "AUD" ? proceedsRealisedAUD : totalFiatDeployed).toLocaleString()}</p></div>
                                         <div><p className="text-white/50">Sell Amount</p><p className="tabular-nums font-medium text-white">{sym}{plan.amountPerPurchase.toLocaleString()}</p></div>
                                         {plan.frequency != null && <div><p className="text-white/50">Frequency</p><p className="tabular-nums font-medium text-white">{getFrequencyLabel(plan.frequency)}</p></div>}
                                         <div><p className="text-white/50">Executions</p><p className="tabular-nums font-medium text-white">{executions.length}</p></div>
-                                        <div><p className="text-white/50">Remaining BTC to distribute</p><p className="tabular-nums font-medium text-white">{(plan.btcHoldings ?? 0) <= 0 ? "No cap" : `${btcRemaining.toFixed(4)} BTC`}</p></div>
+                                        <div><p className="text-white/50">Remaining {planAssetId} to distribute</p><p className="tabular-nums font-medium text-white">{(plan.btcHoldings ?? 0) <= 0 ? "No cap" : `${btcRemaining.toFixed(4)} ${planAssetId}`}</p></div>
                                       </>
                                     ) : (
                                       <>
@@ -3225,10 +3263,10 @@ export default function Home() {
                                             <div className="h-full rounded-full bg-white/40 transition-all duration-300" style={{ width: levels.length ? `${(displayCompletedLevels.size / levels.length) * 100}%` : "0%" }} />
                                           </div>
                                         </div>
-                                        <div><p className="text-white/50">BTC Distributed</p><p className="tabular-nums font-medium text-white">{totalBtcSold.toFixed(4)} BTC</p></div>
+                                        <div><p className="text-white/50">{planAssetId} Distributed</p><p className="tabular-nums font-medium text-white">{totalBtcSold.toFixed(4)} {planAssetId}</p></div>
                                         <div><p className="text-white/50">Cash Realised</p><p className="tabular-nums font-medium text-white">{sym}{Math.round(currency === "AUD" ? proceedsRealisedAUD : totalFiatDeployed).toLocaleString()}</p></div>
                                         <div><p className="text-white/50">Executions</p><p className="tabular-nums font-medium text-white">{displayCompletedLevels.size} / {levels.length}</p></div>
-                                        <div><p className="text-white/50">Remaining BTC to Distribute</p><p className="tabular-nums font-medium text-white">{btcRemaining.toFixed(4)} BTC</p></div>
+                                        <div><p className="text-white/50">Remaining {planAssetId} to Distribute</p><p className="tabular-nums font-medium text-white">{btcRemaining.toFixed(4)} {planAssetId}</p></div>
                                         <div><p className="text-white/50">Projected Proceeds (Full Plan)</p><p className="tabular-nums text-white/90">~{sym}{Math.round(currency === "AUD" ? projectedProceedsAUD : projectedProceedsFiat).toLocaleString()}</p></div>
                                       </>
                                     )}
@@ -3280,11 +3318,11 @@ export default function Home() {
                                           {isAccumulate ? (
                                             <>
                                               <th className="px-3 py-2 font-medium text-white/70">Order Size</th>
-                                              <th className="px-3 py-2 font-medium text-white/70">Est. BTC</th>
+                                              <th className="px-3 py-2 font-medium text-white/70">Est. {planAssetId}</th>
                                             </>
                                           ) : (
                                             <>
-                                              <th className="px-3 py-2 font-medium text-white/70">BTC Sold</th>
+                                              <th className="px-3 py-2 font-medium text-white/70">{planAssetId} Sold</th>
                                               <th className="px-3 py-2 font-medium text-white/70">Est. Proceeds ({currency})</th>
                                             </>
                                           )}
@@ -3294,7 +3332,7 @@ export default function Home() {
                                       <tbody>
                                         {levels.map((level) => {
                                           const amtFiat = getAmountAtRiskFromPlan(plan, level);
-                                          const priceAtLevel = getMockBtcPriceForRisk(level);
+                                          const priceAtLevel = getPriceAtRisk(planAssetId, level);
                                           const btcAtLevel = priceAtLevel > 0 ? Math.max(0, amtFiat / priceAtLevel) : 0;
                                           const estProceedsLevel = currency === "AUD" ? (priceAtLevel * USD_TO_AUD) * btcAtLevel : priceAtLevel * btcAtLevel;
                                           const completed = displayCompletedLevels.has(level);
@@ -3346,7 +3384,7 @@ export default function Home() {
                                       const markerClass = executed ? "risk-marker-completed" : isNext ? "risk-marker-next" : isFuture ? "risk-marker-future" : "risk-marker-pending";
                                       const tooltipLines = [
                                         `Risk level: ${level}`,
-                                        isAccumulate ? `Order size: ${sym}${orderSize.toLocaleString()}` : `Order size: ~${(orderSize / Math.max(1, getMockBtcPriceForRisk(level))).toFixed(4)} BTC`,
+                                        isAccumulate ? `Order size: ${sym}${orderSize.toLocaleString()}` : `Order size: ~${(orderSize / Math.max(1, getPriceAtRisk(planAssetId, level))).toFixed(4)} ${planAssetId}`,
                                         executed ? "Status: Filled" : isNext ? "Status: Current" : "Status: Pending",
                                         ...(ex?.date ? [`Executed: ${formatLastExecution(ex.date + "T00:00:00.000Z")}`] : []),
                                       ];
@@ -3362,14 +3400,14 @@ export default function Home() {
                                 <div className="flex flex-wrap items-center gap-3 shrink-0">
                                   <div className="flex items-center gap-2">
                                     <span className="text-xs text-white/60">{plan.active ? "Active" : "Paused"}</span>
-                                    <button type="button" role="switch" aria-checked={plan.active} disabled={!canSaveAndActivate} onClick={(e) => { e.stopPropagation(); if (canSaveAndActivate) setPlanActive(plan.id, !plan.active); }} title={!canSaveAndActivate ? "Start free trial to activate" : undefined} className={`relative h-5 w-9 shrink-0 rounded-full border transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed ${plan.active ? "border-emerald-500/40 bg-emerald-500/20" : "border-[#F28C28]/40 bg-[#F28C28]/20"}`}>
+                                    <button type="button" role="switch" aria-checked={plan.active} disabled={!effectiveCanSaveAndActivate} onClick={(e) => { e.stopPropagation(); if (effectiveCanSaveAndActivate) setPlanActive(plan.id, !plan.active); }} title={!effectiveCanSaveAndActivate ? "Start free trial to activate" : undefined} className={`relative h-5 w-9 shrink-0 rounded-full border transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed ${plan.active ? "border-emerald-500/40 bg-emerald-500/20" : "border-[#F28C28]/40 bg-[#F28C28]/20"}`}>
                                       <span className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-150 ${plan.active ? "translate-x-4" : "translate-x-0"}`} />
                                     </button>
                                   </div>
-                                  {!strategiesLocked && (
+                                  {!effectiveStrategiesLocked && (
                                     <>
-                                      <button type="button" onClick={(e) => { e.stopPropagation(); loadPlanForEdit(plan); }} className="rounded-lg border border-white/15 px-3 py-1.5 text-xs font-medium text-white/80 hover:bg-white/10 transition-colors duration-150">Edit</button>
-                                      <button type="button" onClick={(e) => { e.stopPropagation(); setDeleteConfirmPlanId(plan.id); }} className="rounded-lg border border-white/15 px-3 py-1.5 text-xs font-medium text-red-300/80 hover:bg-red-500/10 transition-colors duration-150">Delete</button>
+                                      <button type="button" onClick={(e) => { e.stopPropagation(); loadPlanForEdit(plan); }} className="rounded-lg border border-white/20 px-3 py-1.5 text-xs font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent">Edit</button>
+                                      <button type="button" onClick={(e) => { e.stopPropagation(); setDeleteConfirmPlanId(plan.id); }} className="rounded-lg border border-red-400/60 px-3 py-1.5 text-xs font-medium text-red-300 transition-all duration-200 hover:bg-red-500/25 hover:border-red-400">Delete</button>
                                     </>
                                   )}
                                 </div>
@@ -3397,7 +3435,7 @@ export default function Home() {
                     <span className="mb-3 text-3xl text-white/40" aria-hidden>🔒</span>
                     <p className="text-sm font-medium text-white/80">Simulator (Pro)</p>
                     <p className="mt-2 text-xs text-white/55 max-w-sm">Start your free 7-day trial to unlock historical simulation and advanced strategy testing.</p>
-                    <button type="button" onClick={() => setAuthModal("register")} className="mt-5 rounded-lg bg-[#F28C28] px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 ease hover:bg-white hover:text-[#F28C28] focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
+                    <button type="button" onClick={() => setAuthModal("register")} className="mt-5 rounded-lg border border-white/20 px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
                       Upgrade to Standard
                     </button>
                   </>
