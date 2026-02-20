@@ -1,4 +1,5 @@
 "use client";
+// NOTE: UI shows "Plan" but internal state still uses "strategy" naming convention
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -1340,18 +1341,18 @@ export default function Home() {
     <>
       {showLockInToast && (
         <div className="fixed bottom-8 left-1/2 z-[60] -translate-x-1/2 rounded-lg border border-white/20 bg-[#0a1f35] px-5 py-3 shadow-lg ring-1 ring-[#F28C28]/30" role="status" aria-live="polite">
-          <p className="text-sm font-medium text-white">Strategy saved.</p>
+          <p className="text-sm font-medium text-white">Plan saved.</p>
         </div>
       )}
       {showSaveStrategyModal && dcaMode && strategyType && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm transition-opacity duration-200" role="dialog" aria-modal="true" aria-labelledby="save-strategy-title">
           <div className="w-full max-w-sm rounded-xl border border-white/15 bg-[#0a1f35] p-6 shadow-2xl">
-            <h3 id="save-strategy-title" className="text-sm font-semibold text-white">Name Your Strategy</h3>
-            <input type="text" value={strategyNameInput} onChange={(e) => setStrategyNameInput(e.target.value)} placeholder="e.g. Accumulation 30–0" className="mt-4 w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white placeholder-white/40 focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" aria-label="Strategy name" />
+            <h3 id="save-strategy-title" className="text-sm font-semibold text-white">Name Your Plan</h3>
+            <input type="text" value={strategyNameInput} onChange={(e) => setStrategyNameInput(e.target.value)} placeholder="e.g. Accumulation 30–0" className="mt-4 w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white placeholder-white/40 focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" aria-label="Plan name" />
             <div className="mt-6 flex gap-2">
               <button type="button" onClick={() => { setShowSaveStrategyModal(false); setStrategyNameInput(""); }} className="flex-1 rounded-lg border border-white/20 py-2 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent disabled:opacity-60" disabled={lockingIn}>Cancel</button>
               <button type="button" onClick={() => { setLockingIn(true); setTimeout(() => { handleSaveStrategy(); setLockingIn(false); }, 400); }} className={`flex-1 rounded-lg py-2 text-sm font-medium text-white transition-all duration-200 ${lockingIn ? "bg-[#F28C28] scale-105" : "bg-[#F28C28] hover:bg-[#F5A623] hover:scale-105"}`} disabled={lockingIn || !hasValidRange}>
-                {lockingIn ? "Saving…" : "Confirm Strategy"}
+                {lockingIn ? "Saving…" : "Confirm Plan"}
               </button>
             </div>
           </div>
@@ -1360,8 +1361,8 @@ export default function Home() {
       {showUpdateConfirmModal && editingPlanId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="update-strategy-title">
           <div className="w-full max-w-sm rounded-xl border border-white/15 bg-[#0a1f35] p-6 shadow-2xl">
-            <h3 id="update-strategy-title" className="text-sm font-semibold text-white">Update strategy?</h3>
-            <p className="mt-3 text-sm text-white/80">This will update your active strategy.</p>
+            <h3 id="update-strategy-title" className="text-sm font-semibold text-white">Update plan?</h3>
+            <p className="mt-3 text-sm text-white/80">This will update your active plan.</p>
             <ul className="mt-2 list-inside list-disc space-y-1 text-[13px] text-white/70">
               <li>Execution history will remain intact.</li>
               <li>Updated rules apply from this point forward.</li>
@@ -1376,8 +1377,8 @@ export default function Home() {
       {deleteConfirmPlanId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="delete-strategy-title">
           <div className="w-full max-w-sm rounded-xl border border-white/15 bg-[#0a1f35] p-6 shadow-2xl">
-            <h3 id="delete-strategy-title" className="text-sm font-semibold text-white">Delete strategy?</h3>
-            <p className="mt-3 text-sm text-white/80">This will permanently remove this strategy and its execution history.</p>
+            <h3 id="delete-strategy-title" className="text-sm font-semibold text-white">Delete plan?</h3>
+            <p className="mt-3 text-sm text-white/80">This will permanently remove this plan and its execution history.</p>
             <div className="mt-6 flex gap-2">
               <button type="button" onClick={() => setDeleteConfirmPlanId(null)} className="flex-1 rounded-lg border border-white/20 py-2 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent">Cancel</button>
               <button type="button" onClick={() => { deletePlan(deleteConfirmPlanId); setDeleteConfirmPlanId(null); }} className="flex-1 rounded-lg border border-red-400/60 py-2 text-sm font-medium text-red-300 transition-all duration-200 hover:bg-red-500/25 hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 focus:ring-offset-[#0a1f35]">Delete</button>
@@ -1390,7 +1391,7 @@ export default function Home() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="trial-confirm-title">
           <div className="w-full max-w-sm rounded-xl border border-white/15 bg-[#0a1f35] p-6 shadow-2xl">
             <h2 id="trial-confirm-title" className="text-sm font-semibold text-white">Start your 7-day free trial?</h2>
-            <p className="mt-2 text-sm text-white/80">You&apos;ll be able to save and manage BTC strategies for 7 days. No credit card required. You can only activate this trial once.</p>
+            <p className="mt-2 text-sm text-white/80">You&apos;ll be able to save and manage plans for 7 days. No credit card required. You can only activate this trial once.</p>
             <div className="mt-6 flex gap-2">
               <button type="button" onClick={() => setTrialConfirmOpen(false)} className="flex-1 rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent">Cancel</button>
               <button
@@ -1420,7 +1421,7 @@ export default function Home() {
       )}
       {trialActivatedToast && (
         <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-emerald-600/95 px-4 py-2.5 text-sm font-medium text-white shadow-lg">
-          Trial activated! You have 7 days to save and manage strategies.
+          Trial activated! You have 7 days to save and manage plans.
         </div>
       )}
       {/* Upgrade to Standard — placeholder (TODO: Stripe) */}
@@ -1428,7 +1429,7 @@ export default function Home() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="upgrade-modal-title">
           <div className="w-full max-w-sm rounded-xl border border-white/15 bg-[#0a1f35] p-6 shadow-2xl">
             <h2 id="upgrade-modal-title" className="text-sm font-semibold text-white">Upgrade to Standard</h2>
-            <p className="mt-2 text-sm text-white/80">$19 AUD/month. Save, edit, and delete strategies. Payment integration coming soon.</p>
+            <p className="mt-2 text-sm text-white/80">$19 AUD/month. Save, edit, and delete plans. Payment integration coming soon.</p>
             <div className="mt-6 flex gap-2">
               <button type="button" onClick={() => setUpgradeModalOpen(false)} className="flex-1 rounded-lg border border-white/20 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent">Cancel</button>
               <button
@@ -1593,7 +1594,7 @@ export default function Home() {
                   <button type="button" className="w-full rounded-lg border border-red-400/60 py-2.5 text-sm font-medium text-red-300 transition-all duration-200 hover:bg-red-500/25 hover:border-red-400">
                     Downgrade to Free
                   </button>
-                  <p className="text-[11px] text-white/50">You’ll keep your account but lose Standard features (e.g. all assets, save strategies).</p>
+                  <p className="text-[11px] text-white/50">You’ll keep your account but lose Standard features (e.g. all assets, save plans).</p>
                 </>
               )}
             </div>
@@ -1769,13 +1770,13 @@ export default function Home() {
           </div>
         </div>
       )}
-      {/* Strategy Builder (create strategy) modal */}
+      {/* Plan Builder (create plan) modal */}
       {wizardOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="wizard-title">
           <div className="w-full max-w-md rounded-xl border border-white/15 bg-[#0a1f35] shadow-2xl max-h-[90vh] overflow-hidden flex flex-col">
             <div className="px-6 pt-5 pb-2 border-b border-white/10 flex items-start justify-between gap-2">
               <div>
-                <h2 id="wizard-title" className="text-sm font-semibold text-white">Create Strategy</h2>
+                <h2 id="wizard-title" className="text-sm font-semibold text-white">Create Plan</h2>
                 <p className="mt-1 text-[11px] text-white/50">Step {wizardStep} of 5</p>
               </div>
               <button type="button" onClick={closeWizard} className="rounded p-1.5 text-white/60 hover:text-white hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-white/20" aria-label="Close">×</button>
@@ -1786,11 +1787,11 @@ export default function Home() {
                   <h3 className="mb-3 text-sm font-medium text-white">What are you building?</h3>
                   <div className="space-y-2">
                     <button type="button" onClick={() => { setDcaMode("accumulate"); setHasChosenMode(true); setWizardStep(2); }} className={`w-full rounded-lg border px-4 py-3 text-left transition-all border-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F28C28] ${dcaMode === "accumulate" ? "bg-white/12 border-white/20 text-white" : "bg-white/[0.04] text-white/70 hover:bg-white/[0.08] hover:text-white"}`}>
-                      <span className="text-xs font-medium">Accumulate (Buy)</span>
+                      <span className="text-xs font-medium">Accumulate</span>
                       <p className="mt-1 text-[11px] text-white/60">Build a structured accumulation plan within your chosen risk range.</p>
                     </button>
                     <button type="button" onClick={() => { setDcaMode("distribute"); setHasChosenMode(true); setWizardStep(2); }} className={`w-full rounded-lg border px-4 py-3 text-left transition-all border-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F28C28] ${dcaMode === "distribute" ? "bg-white/12 border-white/20 text-white" : "bg-white/[0.04] text-white/70 hover:bg-white/[0.08] hover:text-white"}`}>
-                      <span className="text-xs font-medium">Distribute (Sell)</span>
+                      <span className="text-xs font-medium">Distribute</span>
                       <p className="mt-1 text-[11px] text-white/60">Build a structured distribution plan within your chosen risk range.</p>
                     </button>
                   </div>
@@ -1798,7 +1799,7 @@ export default function Home() {
               )}
               {wizardStep === 2 && dcaMode && (
                 <div>
-                  <h3 className="mb-3 text-sm font-medium text-white">Strategy type</h3>
+                  <h3 className="mb-3 text-sm font-medium text-white">Plan type</h3>
                   <div className="space-y-2">
                     <button type="button" onClick={() => { setStrategyType("fixed"); setHasChosenDcaType(true); setWizardStep(3); }} className={`w-full rounded-lg border px-4 py-3 text-left transition-all border-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F28C28] ${strategyType === "fixed" ? "bg-white/12 border-white/20 text-white" : "bg-white/[0.04] text-white/70 hover:bg-white/[0.08] hover:text-white"}`}>
                       <span className="text-xs font-medium">Fixed</span>
@@ -1825,6 +1826,7 @@ export default function Home() {
                       <input id="wizard-end-risk" type="number" min={0} max={100} value={activeRiskEnd === "" ? "" : activeRiskEnd} onChange={(e) => { const v = e.target.value; setActiveRiskEnd(v === "" ? "" : Math.max(0, Math.min(100, Number(v) || 0))); }} placeholder="0–100" className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white tabular-nums placeholder-white/30 focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" />
                     </div>
                   </div>
+                  <p className="text-[11px] text-white/60 mb-2">You define the risk levels. The plan only activates within your chosen range.</p>
                   <p className="text-[11px] text-white/70 mb-2">Active range: <span className="tabular-nums font-medium text-white/90">{activeRiskStart !== "" && activeRiskEnd !== "" ? `${builderMinR} → ${builderMaxR}` : "—"}</span></p>
                   <div className="relative h-2 w-full rounded-full overflow-hidden" style={{ background: `linear-gradient(to right, ${getRiskColor(0)} 0%, ${getRiskColor(50)} 50%, ${getRiskColor(100)} 100%)` }} aria-hidden>
                     <div className="absolute inset-0 rounded-full bg-black/30" style={{ left: 0, width: `${builderMinR}%` }} />
@@ -1850,7 +1852,7 @@ export default function Home() {
                           <div>
                             <label htmlFor="wizard-buy-amount" className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-white/60">
                               Amount executed per order
-                              <span className="text-white/50 cursor-help" title="Amount executed each time your strategy triggers." aria-label="Help">ⓘ</span>
+                              <span className="text-white/50 cursor-help" title="Amount executed each time your plan triggers." aria-label="Help">ⓘ</span>
                             </label>
                             <input id="wizard-buy-amount" type="number" min={0} step={50} value={investPerInterval} onChange={(e) => setInvestPerInterval(Number(e.target.value) || 0)} className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" />
                           </div>
@@ -1893,7 +1895,7 @@ export default function Home() {
                       <div>
                         <label htmlFor="wizard-capital" className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-white/60">
                           Total budget
-                          <span className="text-white/50 cursor-help" title="Maximum capital allocated to this strategy." aria-label="Help">ⓘ</span>
+                          <span className="text-white/50 cursor-help" title="Maximum capital allocated to this plan." aria-label="Help">ⓘ</span>
                         </label>
                         <input id="wizard-capital" type="number" min={0} step={100} value={capital} onChange={(e) => setCapital(Number(e.target.value) || 0)} className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" />
                       </div>
@@ -1906,7 +1908,7 @@ export default function Home() {
                           <div>
                             <label htmlFor="wizard-sell-amount" className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-white/60">
                               Amount executed per order
-                              <span className="text-white/50 cursor-help" title="Amount executed each time your strategy triggers." aria-label="Help">ⓘ</span>
+                              <span className="text-white/50 cursor-help" title="Amount executed each time your plan triggers." aria-label="Help">ⓘ</span>
                             </label>
                             <input id="wizard-sell-amount" type="number" min={0} step={50} value={sellPerInterval} onChange={(e) => setSellPerInterval(Number(e.target.value) || 0)} className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" />
                           </div>
@@ -1949,7 +1951,7 @@ export default function Home() {
                       <div>
                         <label htmlFor="wizard-btc" className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-white/60">
                           Total budget
-                          <span className="text-white/50 cursor-help" title="Maximum capital allocated to this strategy." aria-label="Help">ⓘ</span>
+                          <span className="text-white/50 cursor-help" title="Maximum capital allocated to this plan." aria-label="Help">ⓘ</span>
                         </label>
                         <input id="wizard-btc" type="number" min={0} step={0.01} value={btcHoldings} onChange={(e) => setBtcHoldings(Number(e.target.value) || 0)} className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white focus:border-[#F28C28] focus:outline-none focus:ring-1 focus:ring-[#F28C28]" placeholder="Max BTC (0 = no cap)" />
                       </div>
@@ -1966,9 +1968,9 @@ export default function Home() {
                 const projectedBtc = dcaMode === "accumulate" ? summaryLevels.reduce((s, L) => s + getAmountAtRisk(builderPlan, L) / Math.max(1, getPriceAtRisk(assetId, L)), 0) : summaryLevels.reduce((s, L) => s + getAmountAtRisk(builderPlan, L) / Math.max(1, getPriceAtRisk(assetId, L)), 0);
                 return (
                 <div>
-                  <h3 className="text-sm font-medium text-white mb-3">Review your strategy</h3>
+                  <h3 className="text-sm font-medium text-white mb-3">Review your plan</h3>
                   <div className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-4 space-y-3 text-[13px]">
-                    <p className="text-white/90"><span className="text-white/55">Mode</span> {dcaMode === "accumulate" ? "Accumulate (Buy)" : "Distribute (Sell)"}</p>
+                    <p className="text-white/90"><span className="text-white/55">Mode</span> {dcaMode === "accumulate" ? "Accumulate" : "Distribute"}</p>
                     <p className="text-white/90"><span className="text-white/55">Type</span> {strategyType === "fixed" ? "Fixed" : "Scaled"}</p>
                     <div>
                       <p className="text-white/55 mb-1.5">Active range</p>
@@ -1985,7 +1987,7 @@ export default function Home() {
                     {dcaMode === "distribute" && <p className="text-white/90"><span className="text-white/55">Total budget</span> {btcHoldings > 0 ? btcHoldings + " " + (builderAsset ?? "BTC") : "No cap"}</p>}
                     {strategyType === "dynamic" && summaryLevels.length > 0 && (
                       <div className="pt-2 border-t border-white/10">
-                        <p className="text-white/55 mb-2">Projected deployment</p>
+                        <p className="text-white/55 mb-2">Estimated deployment breakdown</p>
                         <div className="max-h-[200px] overflow-y-auto rounded border border-white/5">
                           <table className="w-full text-left text-[11px]">
                             <thead className="bg-white/5 border-b border-white/10 sticky top-0">
@@ -2004,13 +2006,14 @@ export default function Home() {
                             </tbody>
                           </table>
                         </div>
-                        <p className="mt-2 text-white/80"><span className="text-white/55">Total capital required</span> {symbol}{Math.round(totalCapitalRequired).toLocaleString()}</p>
-                        <p className="text-[11px] text-white/70">Projected {builderAsset ?? "BTC"} (full plan) ~{projectedBtc.toFixed(4)} {builderAsset ?? "BTC"}</p>
+                        <p className="mt-2 text-white/80"><span className="text-white/55">Total capital required (if fully executed)</span> {symbol}{Math.round(totalCapitalRequired).toLocaleString()}</p>
+                        <p className="text-[11px] text-white/70">Estimated {builderAsset ?? "BTC"} if fully executed ~{projectedBtc.toFixed(4)} {builderAsset ?? "BTC"}</p>
                       </div>
                     )}
                     {strategyType === "fixed" && dcaMode === "accumulate" && (
                       <p className="text-white/80"><span className="text-white/55">Total capital allocated</span> {symbol}{capital.toLocaleString()}</p>
                     )}
+                    <p className="mt-4 text-xs text-white/30">This plan reflects your inputs only. Actual outcomes depend on market conditions.</p>
                   </div>
                 </div>
                 );
@@ -2046,7 +2049,7 @@ export default function Home() {
                       }}
                       className="rounded-lg bg-[#F28C28] py-2 px-4 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F5A623] hover:scale-105 focus:outline-none focus:ring-2 focus:ring-[#F28C28]"
                     >
-                      Save Strategy
+                      Save Plan
                     </button>
                   ) : (
                     <button
@@ -2060,7 +2063,7 @@ export default function Home() {
                       }}
                       className="rounded-lg bg-[#F28C28] py-2 px-4 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F5A623] hover:scale-105 focus:outline-none focus:ring-2 focus:ring-[#F28C28] inline-block text-center"
                     >
-                      {!isLoggedIn ? "Create account to save" : planTier === "free" && !userState.emailVerified ? "Please verify your email to start your free trial" : planTier === "free" && userState.trialUsed ? "Upgrade to Standard to save strategies" : "Start your 7-day free trial to save strategies"}
+                      {!isLoggedIn ? "Create account to save" : planTier === "free" && !userState.emailVerified ? "Please verify your email to start your free trial" : planTier === "free" && userState.trialUsed ? "Upgrade to Standard to save plans" : "Start your 7-day free trial to save plans"}
                     </button>
                   )}
                 </>
@@ -2317,7 +2320,14 @@ export default function Home() {
               onClick={() => dashboardSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
               className="rounded-lg border border-white/20 px-4 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0E2A47]"
             >
-              Explore Framework
+              View Dashboard
+            </button>
+            <button
+              type="button"
+              onClick={() => document.getElementById("about")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              className="rounded-lg border border-white/20 px-4 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0E2A47]"
+            >
+              About
             </button>
             {isLoggedIn ? (
               <div className="relative">
@@ -2418,6 +2428,7 @@ export default function Home() {
           </div>
         </header>
 
+
         <div
           className="relative flex min-h-[calc(100vh-4rem)] flex-col items-center justify-center overflow-hidden px-6 bg-[#061826]"
         >
@@ -2438,7 +2449,7 @@ export default function Home() {
                 className="bg-clip-text text-transparent font-medium"
                 style={{ backgroundImage: "linear-gradient(90deg, #ffffff 0%, #ffffff 10%, #F28C28 60%, #F28C28 100%)" }}
               >
-                digital asset investing.
+                digital asset analysis.
               </span>
             </p>
             <div className="hero-item mt-8" style={{ animationDelay: "200ms" }}>
@@ -2447,7 +2458,7 @@ export default function Home() {
                 onClick={() => dashboardSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
                 className="rounded-lg bg-[#F28C28] px-6 py-3 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F5A623] hover:scale-105 focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0E2A47]"
               >
-                Explore Framework
+                View Dashboard
               </button>
             </div>
           </main>
@@ -2486,8 +2497,8 @@ export default function Home() {
             <div className="flex border-b border-white/10 p-1">
               {[
                 { id: "riskIndex" as const, label: "Risk Index" },
-                { id: "manualPlanner" as const, label: "Strategy Builder" },
-                { id: "savedPlan" as const, label: "My Strategies" },
+                { id: "manualPlanner" as const, label: "Plan Builder" },
+                { id: "savedPlan" as const, label: "My Plans" },
               ].map(({ id, label }) => (
                 <button
                   key={id}
@@ -2570,6 +2581,7 @@ export default function Home() {
                   <p className="text-xs text-white/50">
                     Last updated: {riskUpdatedAt ? new Date(riskUpdatedAt).toLocaleString() : "—"}
                   </p>
+                  <p className="mt-2 text-xs text-white/30">Crypto Super Hub provides market data analysis tools only. The Risk Index is not a buy, sell, or hold signal. Not financial advice.</p>
                 </div>
               </>
             )}
@@ -2632,7 +2644,7 @@ export default function Home() {
                   <p className="mt-2 text-[10px] text-white/50">Drag to explore; releases to current risk.</p>
                 </div>
                 <p className="mt-5 text-xs leading-relaxed text-white/70">
-                  Long-term regression of {allAssets[selectedAsset!]?.name ?? selectedAsset} price data measures relative market risk. Lower values historically reflect earlier cycle positioning. Higher values reflect later cycle positioning.
+                  Long-term regression of {allAssets[selectedAsset!]?.name ?? selectedAsset} price data measures relative market positioning. Lower values reflect earlier cycle positioning. Higher values reflect later cycle positioning.
                 </p>
                 <div className="mt-5 border-t border-white/10 pt-5">
                   <button
@@ -2703,12 +2715,12 @@ export default function Home() {
               </div>
             )}
 
-            {/* Strategy Builder tab — Asset selector first, then Create (wizard) or Edit (full form) */}
+            {/* Plan Builder tab — Asset selector first, then Create (wizard) or Edit (full form) */}
             {dashboardTab === "manualPlanner" && (
               <div className="px-6 py-5 md:px-8 md:py-6">
                 {builderAsset === null ? (
                   <>
-                    <p className="mb-4 text-sm text-white/80">Which asset would you like to build a strategy for?</p>
+                    <p className="mb-4 text-sm text-white/80">Which asset would you like to build a plan for?</p>
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                       {ASSET_ORDER.map((id) => {
                         const a = allAssets[id];
@@ -2757,7 +2769,7 @@ export default function Home() {
                           className={`segmented-btn flex-1 rounded-md py-2.5 text-xs font-medium transition-all duration-150 border border-white/10 focus:outline-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 ${dcaMode === "accumulate" ? "bg-white/12 text-white" : "bg-transparent text-white/60 hover:text-white hover:bg-white/[0.08]"}`}
                           aria-pressed={dcaMode === "accumulate"}
                         >
-                          Accumulate (Buy)
+                          Accumulate
                         </button>
                         <button
                           type="button"
@@ -2765,7 +2777,7 @@ export default function Home() {
                           className={`segmented-btn flex-1 rounded-md py-2.5 text-xs font-medium transition-all duration-150 border border-white/10 focus:outline-none focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0 ${dcaMode === "distribute" ? "bg-white/12 text-white" : "bg-transparent text-white/60 hover:text-white hover:bg-white/[0.08]"}`}
                           aria-pressed={dcaMode === "distribute"}
                         >
-                          Distribute (Sell)
+                          Distribute
                         </button>
                       </div>
 
@@ -3000,7 +3012,7 @@ export default function Home() {
                         </>
                       ) : effectiveCanSaveAndActivate ? (
                         <button type="button" onClick={() => setShowSaveStrategyModal(true)} className="w-full rounded-lg bg-[#F28C28] py-3 text-sm font-medium text-white shadow transition-all duration-200 hover:bg-[#F5A623] hover:scale-105 focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
-                          Save Strategy
+                          Save Plan
                         </button>
                       ) : (
                         <button
@@ -3014,7 +3026,7 @@ export default function Home() {
                           }}
                           className="w-full rounded-lg bg-[#F28C28] py-3 text-sm font-medium text-white shadow transition-all duration-200 hover:bg-[#F5A623] hover:scale-105 focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]"
                         >
-                          {!isLoggedIn ? "Create account to save" : planTier === "free" && !userState.emailVerified ? "Please verify your email to start your free trial" : planTier === "free" && userState.trialUsed ? "Upgrade to Standard to save strategies" : "Start your 7-day free trial to save strategies"}
+                          {!isLoggedIn ? "Create account to save" : planTier === "free" && !userState.emailVerified ? "Please verify your email to start your free trial" : planTier === "free" && userState.trialUsed ? "Upgrade to Standard to save plans" : "Start your 7-day free trial to save plans"}
                         </button>
                       )}
                     </div>
@@ -3026,7 +3038,7 @@ export default function Home() {
                   <div className="rounded-xl border border-white/10 bg-white/[0.06] px-6 py-12 text-center">
                     <p className="text-sm text-white/80 mb-2">Build a strategy step by step.</p>
                     <button type="button" onClick={openWizard} className="rounded-lg border border-white/20 px-6 py-3 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#061826]">
-                      Create Strategy
+                      Create Plan
                     </button>
                   </div>
                 )}
@@ -3035,7 +3047,7 @@ export default function Home() {
               </div>
             )}
 
-            {/* My Strategies tab — accordion, level-based deployment */}
+            {/* My Plans tab — accordion, level-based deployment */}
             {dashboardTab === "savedPlan" && (
               <div className="px-6 py-5 md:px-8 md:py-6 space-y-3">
                 {!isLoggedIn ? (
@@ -3049,7 +3061,7 @@ export default function Home() {
                   <div className="rounded-xl border border-white/10 bg-white/[0.06] px-6 py-14 text-center">
                     <p className="text-base font-semibold text-white">No strategies yet</p>
                     <p className="mt-2 text-sm text-white/60 max-w-sm mx-auto">
-                      {effectiveCanSaveAndActivate ? "Create your first strategy with the Strategy Builder." : effectiveStrategiesLocked ? "Upgrade to Standard to save and manage strategies." : "Start your free trial to save strategies."}
+                      {effectiveCanSaveAndActivate ? "Create your first plan with the Plan Builder." : effectiveStrategiesLocked ? "Upgrade to Standard to save and manage plans." : "Start your free trial to save plans."}
                     </p>
                     <div className="mt-6 flex flex-col sm:flex-row items-center justify-center gap-3">
                       <button
@@ -3057,7 +3069,7 @@ export default function Home() {
                         onClick={() => { setDashboardTab("manualPlanner"); setBuilderAsset(null); dashboardSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }}
                         className="rounded-lg border border-white/20 px-5 py-2.5 text-sm font-medium text-white transition-all duration-200 hover:bg-[#F28C28] hover:border-transparent focus:outline-none focus:ring-2 focus:ring-[#F28C28] focus:ring-offset-2 focus:ring-offset-[#0a1f35]"
                       >
-                        Create Strategy
+                        Create Plan
                       </button>
                       {!effectiveCanSaveAndActivate && (
                         <button
@@ -3239,7 +3251,7 @@ export default function Home() {
                                         <div><p className="text-white/50">{planAssetId} Accumulated</p><p className="tabular-nums font-medium text-white">{totalBtc.toFixed(4)} {planAssetId}</p></div>
                                         <div><p className="text-white/50">Executions</p><p className="tabular-nums font-medium text-white">{displayCompletedLevels.size} / {levels.length}</p></div>
                                         <div><p className="text-white/50">Remaining Orders</p><p className="tabular-nums font-medium text-white">{remainingOrders}</p></div>
-                                        <div><p className="text-white/50">Projected {planAssetId} (Full Plan)</p><p className="tabular-nums text-white/90">~{(levels.reduce((sum, L) => sum + getAmountAtRiskFromPlan(plan, L) / Math.max(1, getPriceAtRisk(planAssetId, L)), 0)).toFixed(4)} {planAssetId}</p></div>
+                                        <div><p className="text-white/50">Estimated {planAssetId} if fully executed</p><p className="tabular-nums text-white/90">~{(levels.reduce((sum, L) => sum + getAmountAtRiskFromPlan(plan, L) / Math.max(1, getPriceAtRisk(planAssetId, L)), 0)).toFixed(4)} {planAssetId}</p></div>
                                       </>
                                     )}
                                   </>
@@ -3452,6 +3464,48 @@ export default function Home() {
           </div>
         </div>
       </section>
+
+      <section id="about" className="relative z-10 bg-[#061826] px-6 py-16 md:px-8 md:py-20">
+        <div className="mx-auto max-w-3xl space-y-8">
+          <div className="rounded-xl border border-white/10 bg-white/[0.06] p-6 md:p-8">
+            <h2 className="text-lg font-semibold text-white md:text-xl">How the Risk Index Works</h2>
+            <div className="mt-4 space-y-4 text-sm leading-relaxed text-white/80">
+              <p>The Risk Index measures where each asset sits within its historical market cycle, on a scale from 0 to 100.</p>
+              <p>It analyses the full price history of each asset using publicly available market data, fits a long-term growth trend through the data, and measures how far the current price sits above or below that trend.</p>
+              <p>Scores closer to 0 mean the price is well below its long-term trend. Scores closer to 50 mean it is near trend. Scores closer to 100 mean it is well above trend.</p>
+              <p>The model uses logarithmic regression and is recalculated regularly as new price data becomes available. Minimum band widths are enforced to ensure the model remains stable across varying market conditions.</p>
+            </div>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-white/[0.06] p-6 md:p-8">
+            <h2 className="text-lg font-semibold text-white md:text-xl">About the Plan Builder</h2>
+            <div className="mt-4 space-y-4 text-sm leading-relaxed text-white/80">
+              <p>The Plan Builder lets you define your own structured approach to accumulating or distributing digital assets based on risk levels you choose.</p>
+              <p>You set the risk range, the order sizes, and the total budget. The tool calculates an estimated deployment breakdown based on your inputs and the current risk band data.</p>
+              <p>No defaults are pre-filled and no recommendations are made. The Plan Builder is a modelling tool — you define the rules, and the tool shows you what your plan would look like if executed.</p>
+            </div>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-white/[0.06] p-6 md:p-8">
+            <h2 className="text-lg font-semibold text-white md:text-xl mb-4">Our Team</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="rounded-lg border border-white/10 bg-white/[0.04] p-4">
+                <p className="font-medium text-white">Jake Pahor</p>
+                <p className="text-xs text-white/60 mt-0.5">[Role placeholder]</p>
+                <p className="text-xs text-white/50 mt-2">[Bio placeholder — to be filled in later]</p>
+              </div>
+              <div className="rounded-lg border border-white/10 bg-white/[0.04] p-4">
+                <p className="font-medium text-white">Tom Prizeman</p>
+                <p className="text-xs text-white/60 mt-0.5">[Role placeholder]</p>
+                <p className="text-xs text-white/50 mt-2">[Bio placeholder — to be filled in later]</p>
+              </div>
+            </div>
+          </div>
+          <div className="border-t border-white/10 pt-6">
+            <p className="text-sm text-white/30">
+              Important: Crypto Super Hub provides general information only and does not constitute financial product advice. The Risk Index reflects historical price behaviour and does not predict future price movements. Users are solely responsible for their own decisions. Crypto Super Hub does not hold an Australian Financial Services Licence.
+            </p>
+          </div>
+        </div>
+      </section>
       </div>
 
       {/* Strategy help tooltips — portaled to body to avoid clipping */}
@@ -3505,11 +3559,9 @@ export default function Home() {
         })()}
 
       <footer className="relative z-10 border-t border-white/10 bg-[#061826]/95 px-6 py-8 md:px-8">
-        <div className="mx-auto max-w-3xl">
-          <p className="text-center text-[11px] leading-relaxed text-white/50">
-            This platform provides general market information and analytical tools. It does not provide personal financial advice.
-          </p>
-        </div>
+        <p className="text-center text-xs text-white/20 py-8">
+          © 2026 Crypto Super Hub. Market data analysis tools. Not financial advice.
+        </p>
       </footer>
     </>
   );

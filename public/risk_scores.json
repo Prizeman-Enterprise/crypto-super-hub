@@ -7,17 +7,17 @@
       "asset_id": "BTC",
       "name": "Bitcoin",
       "date": "2026-02-19",
-      "risk_score": 33.7,
+      "risk_score": 31.1,
       "price": 67144.56,
       "trend_value": 123772.79,
       "components": {
         "deviation": -0.6116,
         "min_deviation": -2.0506,
         "max_deviation": 2.2523,
-        "raw_score": 33.44,
-        "smoothed_score": 33.73,
-        "floor_price": 15923.86,
-        "ceiling_price": 1177061.88
+        "raw_score": 31.1,
+        "smoothed_score": 31.1,
+        "floor_price": 30000,
+        "ceiling_price": 400000
       },
       "regression_mode": "expanding",
       "history_days": 5317,
@@ -27,17 +27,17 @@
       "asset_id": "ETH",
       "name": "Ethereum",
       "date": "2026-02-19",
-      "risk_score": 43.5,
+      "risk_score": 43.3,
       "price": 1977.44,
       "trend_value": 3303.29,
       "components": {
         "deviation": -0.5131,
         "min_deviation": -1.43,
         "max_deviation": 0.6621,
-        "raw_score": 43.83,
-        "smoothed_score": 43.49,
-        "floor_price": 790.47,
-        "ceiling_price": 6404.53
+        "raw_score": 43.3,
+        "smoothed_score": 43.3,
+        "floor_price": 500,
+        "ceiling_price": 12000
       },
       "regression_mode": "rolling",
       "history_days": 3470,
@@ -47,17 +47,17 @@
       "asset_id": "SOL",
       "name": "Solana",
       "date": "2026-02-19",
-      "risk_score": 45.8,
+      "risk_score": 38,
       "price": 81.87,
       "trend_value": 180.98,
       "components": {
         "deviation": -0.7932,
         "min_deviation": -2.3414,
         "max_deviation": 1.103,
-        "raw_score": 44.95,
-        "smoothed_score": 45.76,
-        "floor_price": 17.41,
-        "ceiling_price": 545.29
+        "raw_score": 38,
+        "smoothed_score": 38,
+        "floor_price": 18,
+        "ceiling_price": 1000
       },
       "regression_mode": "rolling",
       "history_days": 1655,
@@ -67,17 +67,17 @@
       "asset_id": "XRP",
       "name": "XRP",
       "date": "2026-02-19",
-      "risk_score": 32.3,
+      "risk_score": 35,
       "price": 1.43,
       "trend_value": 2.13,
       "components": {
         "deviation": -0.4019,
         "min_deviation": -1.3991,
         "max_deviation": 1.7409,
-        "raw_score": 31.76,
-        "smoothed_score": 32.33,
-        "floor_price": 0.53,
-        "ceiling_price": 12.15
+        "raw_score": 35,
+        "smoothed_score": 35,
+        "floor_price": 0.55,
+        "ceiling_price": 8
       },
       "regression_mode": "rolling",
       "history_days": 3943,
@@ -86,16 +86,16 @@
   },
   "asset_id": "BTC",
   "date": "2026-02-19",
-  "risk_score": 33.7,
+  "risk_score": 31.1,
   "price": 67144.56,
   "trend_value": 123772.79,
   "components": {
     "deviation": -0.6116,
     "min_deviation": -2.0506,
     "max_deviation": 2.2523,
-    "raw_score": 33.44,
-    "smoothed_score": 33.73,
-    "floor_price": 15923.86,
-    "ceiling_price": 1177061.88
+    "raw_score": 31.1,
+    "smoothed_score": 31.1,
+    "floor_price": 30000,
+    "ceiling_price": 400000
   }
 }

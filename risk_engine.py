@@ -109,6 +109,24 @@ ASSETS = [
     ),
 ]
 
+# Minimum band widths: floor/ceiling are clamped so the regression never compresses
+# bands beyond industry-standard benchmarks (calibrated 2026-02 with Cowen-style metrics).
+MIN_FLOOR_PRICE = {
+    "BTC": 30_000.0,
+    "ETH": 500.0,
+    "SOL": 18.0,
+    "XRP": 0.55,
+}
+MAX_CEILING_PRICE = {
+    "BTC": 400_000.0,
+    "ETH": 12_000.0,
+    "SOL": 1_000.0,
+    "XRP": 8.0,
+}
+
+# Minimum log-ratio ceiling/floor so the band is never too narrow (e.g. 2x).
+MIN_BAND_RATIO = 2.0
+
 
 # ──────────────────────────────────────────────────────────────
 # Pre-Binance historical prices
@@ -304,13 +322,22 @@ def compute_risk_scores(prices, config):
     df["raw_score"] = np.nan
     df["smoothed_score"] = np.nan
     df["risk_score"] = np.nan
+    df["min_deviation"] = np.nan
+    df["max_deviation"] = np.nan
+    df["floor_price"] = np.nan
+    df["ceiling_price"] = np.nan
 
     alpha = 2.0 / (config.smooth_span + 1)
     prev_smoothed = 50.0
     all_residuals = []
+    # Residual per row index (for min/max deviation over regression window)
+    residuals_by_i = [np.nan] * n
 
     log_days = df["log_days"].values
     log_price = df["log_price"].values
+    asset_id = config.asset_id
+    min_floor = MIN_FLOOR_PRICE.get(asset_id, 0.0)
+    max_ceiling = MAX_CEILING_PRICE.get(asset_id, 1e30)
 
     for i in range(n):
         # Determine regression window
@@ -345,12 +372,36 @@ def compute_risk_scores(prices, config):
         df.iat[i, df.columns.get_loc("trend_value")] = np.exp(trend)
         df.iat[i, df.columns.get_loc("residual")] = residual
         all_residuals.append(residual)
+        residuals_by_i[i] = residual
 
-        # Normalization window
+        # Min/max deviation over the regression window (same window used for OLS)
+        r_in_window = [residuals_by_i[j] for j in range(win_start, i + 1) if not np.isnan(residuals_by_i[j])]
+        if not r_in_window:
+            r_in_window = [residual]
+        min_r = float(np.min(r_in_window))
+        max_r = float(np.max(r_in_window))
+        trend_i = np.exp(trend)
+        floor_tent = trend_i * np.exp(min_r)
+        ceiling_tent = trend_i * np.exp(max_r)
+
+        # Normalization window for MAD / z-score
         if config.norm_window_days > 0 and len(all_residuals) > config.norm_window_days:
             r_arr = np.array(all_residuals[-config.norm_window_days:])
         else:
             r_arr = np.array(all_residuals)
+
+        # Enforce minimum band widths: clamp floor/ceiling to industry benchmarks
+        floor = max(floor_tent, min_floor)
+        ceiling = min(ceiling_tent, max_ceiling)
+        if ceiling < floor * MIN_BAND_RATIO:
+            ceiling = floor * MIN_BAND_RATIO
+        # Store deviations that correspond to the clamped band (for consistent risk = 100*log(price/floor)/log(ceiling/floor))
+        min_dev = np.log(floor / trend_i)
+        max_dev = np.log(ceiling / trend_i)
+        df.iat[i, df.columns.get_loc("min_deviation")] = min_dev
+        df.iat[i, df.columns.get_loc("max_deviation")] = max_dev
+        df.iat[i, df.columns.get_loc("floor_price")] = floor
+        df.iat[i, df.columns.get_loc("ceiling_price")] = ceiling
 
         med = np.median(r_arr)
         mad = np.median(np.abs(r_arr - med))
@@ -427,10 +478,13 @@ def main():
                 "price": round(float(latest["price"]), 2),
                 "trend_value": round(float(latest["trend_value"]), 2),
                 "components": {
-                    "residual": round(float(latest["residual"]), 6),
-                    "z_score": round(float(latest["z_score"]), 4),
+                    "deviation": round(float(latest["residual"]), 4),
+                    "min_deviation": round(float(latest["min_deviation"]), 4),
+                    "max_deviation": round(float(latest["max_deviation"]), 4),
                     "raw_score": round(float(latest["raw_score"]), 2),
                     "smoothed_score": round(float(latest["smoothed_score"]), 2),
+                    "floor_price": round(float(latest["floor_price"]), 2),
+                    "ceiling_price": round(float(latest["ceiling_price"]), 2),
                 },
                 "regression_mode": config.regression_mode,
                 "history_days": len(valid),
